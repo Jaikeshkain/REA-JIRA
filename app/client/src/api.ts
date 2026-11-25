@@ -102,6 +102,17 @@ export interface AutomationRun {
   id: string; status: 'success' | 'no_action' | 'error'; message: string; actions: string[]; created: string;
   rule: { id: string; name: string }; issue: { key: string; summary: string } | null; initiator: User | null;
 }
+export interface ColumnDef { id: string; label: string; space?: string }
+export type BulkAction =
+  | { type: 'transition'; statusName: string }
+  | { type: 'edit'; field: string; operation?: 'SET' | 'ADD' | 'REMOVE'; value: any }
+  | { type: 'delete' };
+export interface BulkResult { succeeded: number; failed: number; results: { key: string; ok: boolean; error?: string }[] }
+export interface ImportResult {
+  dryRun: boolean; ok: number; failed: number; ignored: string[];
+  mapping: { column: string; field: string | null }[];
+  rows: { row: number; ok: boolean; key?: string; errors: string[]; summary: string }[];
+}
 export type SprintState = 'future' | 'active' | 'closed';
 export interface Sprint { id: string; name: string; goal: string; state: SprintState; startDate: string | null; endDate: string | null; completeDate: string | null }
 export interface BacklogData {
@@ -239,6 +250,33 @@ export const api = {
   deleteRule: (id: string) => call('DELETE', `/automation/${id}`),
   ruleRuns: (id: string) => call<AutomationRun[]>('GET', `/automation/${id}/runs`),
   issueRuns: (key: string) => call<AutomationRun[]>('GET', `/issue/${key}/automation`),
+  columns: () => call<{ defaults: string[]; columns: ColumnDef[] }>('GET', '/search/columns'),
+  searchTable: (jql: string, columns: string[], startAt = 0, maxResults = 50) =>
+    call<SearchResult & { issues: (Issue & { custom: Record<string, string | null> })[] }>('POST', '/search/table', { jql, columns, startAt, maxResults }),
+  bulk: (keys: string[], action: BulkAction) => call<BulkResult>('POST', '/bulk', { keys, action }),
+  /** CSV download needs the auth header, so fetch it as a blob and save it. */
+  exportCsv: async (jql: string, columns: string[]) => {
+    const res = await fetch(`/api/search/csv?jql=${encodeURIComponent(jql)}&columns=${encodeURIComponent(columns.join(','))}`, {
+      headers: session.token ? { authorization: `Bearer ${session.token}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => null))?.errorMessages?.[0] ?? 'Export failed');
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? 'export.csv';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    return { total: Number(res.headers.get('x-total-count') ?? 0), exported: Number(res.headers.get('x-exported-count') ?? 0) };
+  },
+  importCsv: async (key: string, csv: string, dryRun: boolean) => {
+    const res = await fetch(`/api/project/${key}/import?dryRun=${dryRun}`, {
+      method: 'POST', body: csv,
+      headers: { 'content-type': 'text/csv', ...(session.token ? { authorization: `Bearer ${session.token}` } : {}) },
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new ApiError(res.status, data?.errorMessages?.[0] ?? 'Import failed');
+    return data as ImportResult;
+  },
   linkTypes: () => call<{ issueLinkTypes: LinkType[] }>('GET', '/issueLinkType'),
   createLink: (type: string, outwardKey: string, inwardKey: string) =>
     call<{ id: string }>('POST', '/issueLink', { type: { name: type }, outwardIssue: { key: outwardKey }, inwardIssue: { key: inwardKey } }),

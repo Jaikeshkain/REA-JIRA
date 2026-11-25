@@ -70,7 +70,7 @@ export function issueJson(r: any) {
 
 const toDate = (d: unknown) => (d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10));
 
-async function loadIssue(db: Db, user: AuthUser, key: string) {
+export async function loadIssue(db: Db, user: AuthUser, key: string) {
   const [row] = await db.query(`${SELECT_FROM} WHERE i.tenant_id = $1 AND upper(i.key) = upper($2)`, [user.tenantId, key]);
   if (!row) throw notFound(`Issue ${key}`);
   const role = await roleIn(db, user, row.project_id);
@@ -123,6 +123,275 @@ const CreateIssue = z.object({
 });
 const FieldEdit = z.object({ operation: z.enum(['SET', 'ADD', 'REMOVE']).default('SET'), value: z.any() });
 
+// ------------------------------------------------------------------ operations (shared by routes, bulk change, import)
+
+/** Create a work item (whole field map, Jira create semantics). Fires automation after commit. */
+export async function createIssue(db: Db, user: AuthUser, input: unknown): Promise<{ id: number; key: string }> {
+  const { fields, watchers } = CreateIssue.parse(input);
+  let project;
+  if (fields.project.key) project = await projectByKey(db, user, fields.project.key);
+  else {
+    [project] = await db.query(`SELECT * FROM projects WHERE tenant_id = $1 AND id::text = $2`, [
+      user.tenantId,
+      String(fields.project.id ?? ''),
+    ]);
+    if (!project) throw notFound('Project');
+  }
+  const role = await requirePerm(db, user, project.id, 'CREATE_ISSUES');
+
+  const created = await db.tx(async (q) => {
+    const [type] = await q.query(
+      `SELECT * FROM issue_types WHERE project_id = $1 AND (id::text = $2 OR lower(name) = lower($3))`,
+      [project.id, String(fields.issuetype.id ?? ''), fields.issuetype.name ?? ''],
+    );
+    if (!type) throw bad('Invalid issue type', { issuetype: 'not in this project' });
+
+    let parentId: number | null = null;
+    if (fields.parent?.key || fields.parent?.id) {
+      const [par] = await q.query(
+        `SELECT i.id, t.hierarchy_level FROM issues i JOIN issue_types t ON t.id = i.type_id
+         WHERE i.tenant_id = $1 AND (upper(i.key) = upper($2) OR i.id::text = $3)`,
+        [user.tenantId, fields.parent.key ?? '', String(fields.parent.id ?? '')],
+      );
+      if (!par) throw bad('Parent not found', { parent: 'not found' });
+      if (par.hierarchy_level !== type.hierarchy_level + 1) {
+        throw bad('Parent must be one level above this issue type', { parent: 'invalid hierarchy' });
+      }
+      parentId = par.id;
+    } else if (type.hierarchy_level === -1) {
+      throw bad('Subtasks need a parent', { parent: 'required' });
+    }
+
+    let priorityId: number | null = null;
+    if (fields.priority) {
+      const [pr] = await q.query(`SELECT id FROM priorities WHERE id::text = $1 OR lower(name) = lower($2)`, [
+        String(fields.priority.id ?? ''),
+        fields.priority.name ?? '',
+      ]);
+      if (!pr) throw bad('Invalid priority');
+      priorityId = pr.id;
+    } else {
+      [{ id: priorityId }] = await q.query(`SELECT id FROM priorities WHERE name = 'Medium'`);
+    }
+
+    const assignee = fields.assignee
+      ? await userInTenant(q, user.tenantId, fields.assignee.accountId)
+      : project.default_assignee_id ? { id: project.default_assignee_id } : null;
+    if (fields.assignee && !can(role, 'ASSIGN_ISSUES', user.isSiteAdmin)) throw forbidden('ASSIGN_ISSUES');
+    const reporter = fields.reporter ? await userInTenant(q, user.tenantId, fields.reporter.accountId) : { id: user.id };
+    if (fields.reporter && reporter!.id !== user.id && !can(role, 'MODIFY_REPORTER', user.isSiteAdmin)) throw forbidden('MODIFY_REPORTER');
+
+    // custom fields: validate every supplied value and enforce "required" for this work type
+    const cfs = await fieldsOf(q, project.id);
+    const cfValues: { id: number; value: unknown }[] = [];
+    for (const f of cfs) {
+      const raw = (fields as Record<string, unknown>)[cfKey(f.id)];
+      if (!appliesTo(f, type.id)) {
+        if (raw != null) throw bad(`${f.name} does not apply to ${type.name}`, { [cfKey(f.id)]: 'not applicable' });
+        continue;
+      }
+      const v = await normalise(q, user.tenantId, f, raw);
+      if (v == null && f.required) throw bad(`${f.name} is required`, { [cfKey(f.id)]: 'required' });
+      if (v != null) cfValues.push({ id: f.id, value: v });
+    }
+    const unknown = Object.keys(fields).filter((k) => /^customfield_/.test(k) && !cfs.some((f) => cfKey(f.id) === k));
+    if (unknown.length) throw bad(`Unknown field ${unknown[0]} for this space`);
+
+    if (fields.startdate && fields.duedate && fields.startdate > fields.duedate) {
+      throw bad('Start date must be on or before the due date', { startdate: 'order' });
+    }
+    const [first] = await q.query(`SELECT id FROM statuses WHERE project_id = $1 ORDER BY position LIMIT 1`, [project.id]);
+    // Atomic per-project counter → stable key KEY-N
+    const [{ issue_counter: n }] = await q.query(
+      `UPDATE projects SET issue_counter = issue_counter + 1 WHERE id = $1 RETURNING issue_counter`,
+      [project.id],
+    );
+    const [{ max }] = await q.query(`SELECT max(rank) AS max FROM issues WHERE project_id = $1`, [project.id]);
+    const key = `${project.key}-${n}`;
+    const [row] = await q.query(
+      `INSERT INTO issues (tenant_id, project_id, number, key, type_id, status_id, priority_id, summary, description,
+          assignee_id, reporter_id, creator_id, parent_id, labels, due_date, start_date, story_points, rank)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
+      [
+        user.tenantId, project.id, n, key, type.id, first.id, priorityId, fields.summary,
+        sanitizeAdf(fields.description), assignee?.id ?? null, reporter!.id, user.id, parentId,
+        [...new Set(fields.labels ?? [])], fields.duedate ?? null, fields.startdate ?? null, fields.storypoints ?? null,
+        rankBetween(max ?? null, null),
+      ],
+    );
+    if (fields.sprint?.id != null) {
+      if (type.hierarchy_level !== 0) throw bad('Only stories, tasks and bugs can be planned into a sprint', { sprint: 'invalid type' });
+      await setIssueSprint(q, user.id, { id: row.id, project_id: project.id, sprint_id: null }, Number(fields.sprint.id));
+    }
+    for (const cv of cfValues) {
+      await q.query(`INSERT INTO issue_custom_values (issue_id, field_id, value) VALUES ($1,$2,$3::jsonb)`, [row.id, cv.id, JSON.stringify(cv.value)]);
+    }
+    const watcherIds = new Set<number>([user.id, ...(watchers ?? []).map(Number)]);
+    if (assignee?.id) watcherIds.add(assignee.id);
+    for (const w of watcherIds) {
+      await q.query(`INSERT INTO watchers (issue_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [row.id, w]);
+    }
+    if (assignee?.id) await notify(q, { actorId: user.id, issueId: row.id, kind: 'assigned', recipients: [assignee.id] });
+    await logChange(q, row.id, user.id, 'created', {}, { v: row.id, s: key });
+    return { id: row.id, key };
+  });
+  await fireAutomation(db, { type: 'issue_created', issueId: created.id, actorId: user.id });
+  return created;
+}
+
+/** Per-field edit (Jira issuefieldvalue mutation). Writes History, notifies, fires automation after commit. */
+export async function editField(db: Db, user: AuthUser, key: string, fieldId: string, input: unknown) {
+  const { row, role } = await loadIssue(db, user, key);
+  const { operation, value } = FieldEdit.parse(input ?? {});
+  const field = fieldId.toLowerCase();
+  const need = field === 'assignee' ? 'ASSIGN_ISSUES' : field === 'reporter' ? 'MODIFY_REPORTER' : 'EDIT_ISSUES';
+  if (!can(role, need as any, user.isSiteAdmin)) throw forbidden(need);
+
+  await db.tx(async (q) => {
+    const set = async (col: string, v: unknown, from: { v?: unknown; s?: unknown }, to: { v?: unknown; s?: unknown }) => {
+      await q.query(`UPDATE issues SET ${col} = $1, updated_at = now() WHERE id = $2`, [v, row.id]);
+      await logChange(q, row.id, user.id, field, from, to);
+    };
+    switch (field) {
+      case 'summary': {
+        const s = z.string().trim().min(1).max(255).parse(value);
+        return set('summary', s, { s: row.summary }, { s });
+      }
+      case 'description': {
+        const doc = await linkMentions(q, row.project_id, sanitizeAdf(value));
+        await set('description', doc, { s: adfToText(row.description) }, { s: adfToText(doc) });
+        const before = new Set(mentionedIds(row.description));
+        await notify(q, { actorId: user.id, issueId: row.id, kind: 'mentioned', recipients: mentionedIds(doc).filter((id) => !before.has(id)), data: { where: 'description', excerpt: excerpt(adfToText(doc)) } });
+        return;
+      }
+      case 'assignee': case 'reporter': {
+        const u = await userInTenant(q, user.tenantId, value?.accountId ?? value);
+        if (field === 'reporter' && !u) throw bad('Reporter is required');
+        const col = field === 'assignee' ? 'assignee_id' : 'reporter_id';
+        const prevName = field === 'assignee' ? row.a_name : row.r_name;
+        await set(col, u?.id ?? null, { v: row[col], s: prevName }, { v: u?.id, s: u?.display_name });
+        if (field === 'assignee' && u && u.id !== row.assignee_id) {
+          await watch(q, row.id, u.id);
+          await notify(q, { actorId: user.id, issueId: row.id, kind: 'assigned', recipients: [u.id] });
+        }
+        return;
+      }
+      case 'priority': {
+        const [pr] = await q.query(`SELECT * FROM priorities WHERE id::text = $1 OR lower(name) = lower($1)`, [
+          String(value?.id ?? value?.name ?? value),
+        ]);
+        if (!pr) throw bad('Invalid priority');
+        return set('priority_id', pr.id, { v: row.priority_id, s: row.pr_name }, { v: pr.id, s: pr.name });
+      }
+      case 'labels': {
+        const items = z.array(z.string().trim().min(1).regex(/^\S+$/)).parse(Array.isArray(value) ? value : [value]);
+        const cur: string[] = row.labels ?? [];
+        const next =
+          operation === 'ADD' ? [...new Set([...cur, ...items])]
+          : operation === 'REMOVE' ? cur.filter((l) => !items.includes(l))
+          : [...new Set(items)];
+        return set('labels', next, { s: cur }, { s: next });
+      }
+      case 'duedate': case 'startdate': {
+        const d = value == null || value === '' ? null : z.string().regex(/^\d{4}-\d{2}-\d{2}$/).parse(value);
+        const col = field === 'duedate' ? 'due_date' : 'start_date';
+        // Timeline bars need start <= due
+        const other = field === 'duedate' ? row.start_date : row.due_date;
+        if (d && other) {
+          const [start, due] = field === 'duedate' ? [toDate(other), d] : [d, toDate(other)];
+          if (start > due) throw bad('Start date must be on or before the due date', { [field]: 'order' });
+        }
+        return set(col, d, { s: row[col] ? toDate(row[col]) : null }, { s: d });
+      }
+      case 'storypoints': {
+        const n = value == null || value === '' ? null : z.coerce.number().nonnegative().parse(value);
+        // re-estimating work in the active sprint changes its scope (burndown shows it)
+        await q.query(
+          `UPDATE sprint_scope SET points = $1 WHERE issue_id = $2 AND removed_at IS NULL
+             AND sprint_id IN (SELECT id FROM sprints WHERE state = 'active')`,
+          [n, row.id],
+        );
+        return set('story_points', n, { s: row.story_points }, { s: n });
+      }
+      case 'sprint': {
+        const id = value?.id ?? value;
+        if (row.t_level !== 0) throw bad('Only stories, tasks and bugs can be planned into a sprint');
+        return setIssueSprint(q, user.id, row, id == null || id === '' ? null : Number(id));
+      }
+      case 'parent': {
+        const k = value?.key ?? value;
+        if (k == null || k === '') return set('parent_id', null, { s: row.parent_key }, { s: null });
+        const [par] = await q.query(
+          `SELECT i.id, i.key, t.hierarchy_level FROM issues i JOIN issue_types t ON t.id = i.type_id
+           WHERE i.tenant_id = $1 AND upper(i.key) = upper($2)`,
+          [user.tenantId, String(k)],
+        );
+        if (!par) throw bad('Parent not found');
+        if (par.id === row.id) throw bad('An issue cannot be its own parent');
+        if (par.hierarchy_level !== row.t_level + 1) throw bad('Parent must be one level above this issue type');
+        return set('parent_id', par.id, { s: row.parent_key }, { s: par.key });
+      }
+      case 'issuetype': {
+        const [t] = await q.query(`SELECT * FROM issue_types WHERE project_id = $1 AND (id::text = $2 OR lower(name) = lower($2))`, [
+          row.project_id,
+          String(value?.id ?? value?.name ?? value),
+        ]);
+        if (!t) throw bad('Invalid issue type');
+        if (t.hierarchy_level !== row.t_level) throw bad('Changing hierarchy level (e.g. Task → Epic) is not supported yet');
+        return set('type_id', t.id, { v: row.type_id, s: row.t_name }, { v: t.id, s: t.name });
+      }
+      default: {
+        const m = /^customfield_(\d+)$/.exec(field);
+        if (m) {
+          const [f] = await q.query(`SELECT * FROM custom_fields WHERE id = $1 AND project_id = $2`, [Number(m[1]), row.project_id]);
+          if (!f) throw bad(`Unknown field ${field} for this space`);
+          return setValue(q, user.id, user.tenantId, row, f, value);
+        }
+        throw bad(`Field '${fieldId}' cannot be edited here${field === 'status' ? ' — use transitions' : ''}`);
+      }
+    }
+  });
+  await fireAutomation(db, { type: 'field_changed', issueId: row.id, actorId: user.id, field });
+}
+
+/** Move a work item by transition id (conditions + validators apply). Fires automation after commit. */
+export async function transitionIssue(db: Db, user: AuthUser, key: string, transitionId: number) {
+  const { row, role } = await loadIssue(db, user, key);
+  if (!can(role, 'TRANSITION_ISSUES', user.isSiteAdmin)) throw forbidden('TRANSITION_ISSUES');
+  await db.tx((q) => applyTransition(q, user, role, row, transitionId));
+  const [now] = await db.query(`SELECT status_id FROM issues WHERE id = $1`, [row.id]);
+  if (now && now.status_id !== row.status_id) {
+    await fireAutomation(db, { type: 'issue_transitioned', issueId: row.id, actorId: user.id, fromStatusId: row.status_id, toStatusId: now.status_id });
+  }
+}
+
+/** Move to a status by picking an allowed transition into it (bulk change). */
+export async function moveToStatus(db: Db, user: AuthUser, key: string, statusId: number) {
+  const { row, role } = await loadIssue(db, user, key);
+  if (row.status_id === statusId) return;
+  const options = await transitionsFor(db, user, role, row.project_id, row.status_id);
+  const tr = options.find((t: any) => t.to_id === statusId);
+  if (!tr) throw bad(`No transition to that status from ${row.s_name}`);
+  await transitionIssue(db, user, key, tr.id);
+}
+
+/** Delete a work item (and, if allowed, its children) plus their attachment files. */
+export async function deleteIssue(db: Db, user: AuthUser, store: FileStore, key: string, deleteSubtasks: boolean) {
+  const { row, role } = await loadIssue(db, user, key);
+  if (!can(role, 'DELETE_ISSUES', user.isSiteAdmin)) throw forbidden('DELETE_ISSUES');
+  const [{ n }] = await db.query(`SELECT count(*)::int AS n FROM issues WHERE parent_id = $1`, [row.id]);
+  if (n > 0 && !deleteSubtasks) throw bad(`${row.key} has ${n} child issue(s); pass deleteSubtasks=true`);
+  const files = await db.tx(async (q) => {
+    const keys = (
+      await q.query(`SELECT storage_key FROM attachments WHERE issue_id IN (SELECT id FROM issues WHERE id = $1 OR parent_id = $1)`, [row.id])
+    ).map((a) => a.storage_key as string);
+    await q.query(`DELETE FROM issues WHERE parent_id = $1`, [row.id]);
+    await q.query(`DELETE FROM issues WHERE id = $1`, [row.id]);
+    return keys;
+  });
+  await store.remove(files); // after commit: rows are gone, so the bytes can go too
+}
+
 // ------------------------------------------------------------------ routes
 
 export function issueRoutes(db: Db, store: FileStore) {
@@ -132,117 +401,8 @@ export function issueRoutes(db: Db, store: FileStore) {
   r.post(
     '/issue',
     h(async (req, res) => {
-      const user = req.user!;
-      const { fields, watchers } = CreateIssue.parse(req.body);
-      let project;
-      if (fields.project.key) project = await projectByKey(db, user, fields.project.key);
-      else {
-        [project] = await db.query(`SELECT * FROM projects WHERE tenant_id = $1 AND id::text = $2`, [
-          user.tenantId,
-          String(fields.project.id ?? ''),
-        ]);
-        if (!project) throw notFound('Project');
-      }
-      const role = await requirePerm(db, user, project.id, 'CREATE_ISSUES');
-
-      const created = await db.tx(async (q) => {
-        const [type] = await q.query(
-          `SELECT * FROM issue_types WHERE project_id = $1 AND (id::text = $2 OR lower(name) = lower($3))`,
-          [project.id, String(fields.issuetype.id ?? ''), fields.issuetype.name ?? ''],
-        );
-        if (!type) throw bad('Invalid issue type', { issuetype: 'not in this project' });
-
-        let parentId: number | null = null;
-        if (fields.parent?.key || fields.parent?.id) {
-          const [par] = await q.query(
-            `SELECT i.id, t.hierarchy_level FROM issues i JOIN issue_types t ON t.id = i.type_id
-             WHERE i.tenant_id = $1 AND (upper(i.key) = upper($2) OR i.id::text = $3)`,
-            [user.tenantId, fields.parent.key ?? '', String(fields.parent.id ?? '')],
-          );
-          if (!par) throw bad('Parent not found', { parent: 'not found' });
-          if (par.hierarchy_level !== type.hierarchy_level + 1) {
-            throw bad('Parent must be one level above this issue type', { parent: 'invalid hierarchy' });
-          }
-          parentId = par.id;
-        } else if (type.hierarchy_level === -1) {
-          throw bad('Subtasks need a parent', { parent: 'required' });
-        }
-
-        let priorityId: number | null = null;
-        if (fields.priority) {
-          const [pr] = await q.query(`SELECT id FROM priorities WHERE id::text = $1 OR lower(name) = lower($2)`, [
-            String(fields.priority.id ?? ''),
-            fields.priority.name ?? '',
-          ]);
-          if (!pr) throw bad('Invalid priority');
-          priorityId = pr.id;
-        } else {
-          [{ id: priorityId }] = await q.query(`SELECT id FROM priorities WHERE name = 'Medium'`);
-        }
-
-        const assignee = fields.assignee
-          ? await userInTenant(q, user.tenantId, fields.assignee.accountId)
-          : project.default_assignee_id ? { id: project.default_assignee_id } : null;
-        if (fields.assignee && !can(role, 'ASSIGN_ISSUES', user.isSiteAdmin)) throw forbidden('ASSIGN_ISSUES');
-        const reporter = fields.reporter ? await userInTenant(q, user.tenantId, fields.reporter.accountId) : { id: user.id };
-        if (fields.reporter && reporter!.id !== user.id && !can(role, 'MODIFY_REPORTER', user.isSiteAdmin)) throw forbidden('MODIFY_REPORTER');
-
-        // custom fields: validate every supplied value and enforce "required" for this work type
-        const cfs = await fieldsOf(q, project.id);
-        const cfValues: { id: number; value: unknown }[] = [];
-        for (const f of cfs) {
-          const raw = (fields as Record<string, unknown>)[cfKey(f.id)];
-          if (!appliesTo(f, type.id)) {
-            if (raw != null) throw bad(`${f.name} does not apply to ${type.name}`, { [cfKey(f.id)]: 'not applicable' });
-            continue;
-          }
-          const v = await normalise(q, user.tenantId, f, raw);
-          if (v == null && f.required) throw bad(`${f.name} is required`, { [cfKey(f.id)]: 'required' });
-          if (v != null) cfValues.push({ id: f.id, value: v });
-        }
-        const unknown = Object.keys(fields).filter((k) => /^customfield_/.test(k) && !cfs.some((f) => cfKey(f.id) === k));
-        if (unknown.length) throw bad(`Unknown field ${unknown[0]} for this space`);
-
-        if (fields.startdate && fields.duedate && fields.startdate > fields.duedate) {
-          throw bad('Start date must be on or before the due date', { startdate: 'order' });
-        }
-        const [first] = await q.query(`SELECT id FROM statuses WHERE project_id = $1 ORDER BY position LIMIT 1`, [project.id]);
-        // Atomic per-project counter → stable key KEY-N
-        const [{ issue_counter: n }] = await q.query(
-          `UPDATE projects SET issue_counter = issue_counter + 1 WHERE id = $1 RETURNING issue_counter`,
-          [project.id],
-        );
-        const [{ max }] = await q.query(`SELECT max(rank) AS max FROM issues WHERE project_id = $1`, [project.id]);
-        const key = `${project.key}-${n}`;
-        const [row] = await q.query(
-          `INSERT INTO issues (tenant_id, project_id, number, key, type_id, status_id, priority_id, summary, description,
-              assignee_id, reporter_id, creator_id, parent_id, labels, due_date, start_date, story_points, rank)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
-          [
-            user.tenantId, project.id, n, key, type.id, first.id, priorityId, fields.summary,
-            sanitizeAdf(fields.description), assignee?.id ?? null, reporter!.id, user.id, parentId,
-            [...new Set(fields.labels ?? [])], fields.duedate ?? null, fields.startdate ?? null, fields.storypoints ?? null,
-            rankBetween(max ?? null, null),
-          ],
-        );
-        if (fields.sprint?.id != null) {
-          if (type.hierarchy_level !== 0) throw bad('Only stories, tasks and bugs can be planned into a sprint', { sprint: 'invalid type' });
-          await setIssueSprint(q, user.id, { id: row.id, project_id: project.id, sprint_id: null }, Number(fields.sprint.id));
-        }
-        for (const cv of cfValues) {
-          await q.query(`INSERT INTO issue_custom_values (issue_id, field_id, value) VALUES ($1,$2,$3::jsonb)`, [row.id, cv.id, JSON.stringify(cv.value)]);
-        }
-        const watcherIds = new Set<number>([user.id, ...(watchers ?? []).map(Number)]);
-        if (assignee?.id) watcherIds.add(assignee.id);
-        for (const w of watcherIds) {
-          await q.query(`INSERT INTO watchers (issue_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [row.id, w]);
-        }
-        if (assignee?.id) await notify(q, { actorId: user.id, issueId: row.id, kind: 'assigned', recipients: [assignee.id] });
-        await logChange(q, row.id, user.id, 'created', {}, { v: row.id, s: key });
-        return { id: row.id, key };
-      });
+      const created = await createIssue(db, req.user!, req.body);
       res.status(201);
-      await fireAutomation(db, { type: 'issue_created', issueId: created.id, actorId: user.id });
       return { id: String(created.id), key: created.key, self: `/api/issue/${created.key}` };
     }),
   );
@@ -293,117 +453,7 @@ export function issueRoutes(db: Db, store: FileStore) {
     '/issue/:key/fields/:fieldId',
     h(async (req) => {
       const user = req.user!;
-      const { row, role } = await loadIssue(db, user, String(req.params.key));
-      const { operation, value } = FieldEdit.parse(req.body ?? {});
-      const field = String(req.params.fieldId).toLowerCase();
-      const need = field === 'assignee' ? 'ASSIGN_ISSUES' : field === 'reporter' ? 'MODIFY_REPORTER' : 'EDIT_ISSUES';
-      if (!can(role, need as any, user.isSiteAdmin)) throw forbidden(need);
-
-      await db.tx(async (q) => {
-        const set = async (col: string, v: unknown, from: { v?: unknown; s?: unknown }, to: { v?: unknown; s?: unknown }) => {
-          await q.query(`UPDATE issues SET ${col} = $1, updated_at = now() WHERE id = $2`, [v, row.id]);
-          await logChange(q, row.id, user.id, field, from, to);
-        };
-        switch (field) {
-          case 'summary': {
-            const s = z.string().trim().min(1).max(255).parse(value);
-            return set('summary', s, { s: row.summary }, { s });
-          }
-          case 'description': {
-            const doc = await linkMentions(q, row.project_id, sanitizeAdf(value));
-            await set('description', doc, { s: adfToText(row.description) }, { s: adfToText(doc) });
-            const before = new Set(mentionedIds(row.description));
-            await notify(q, { actorId: user.id, issueId: row.id, kind: 'mentioned', recipients: mentionedIds(doc).filter((id) => !before.has(id)), data: { where: 'description', excerpt: excerpt(adfToText(doc)) } });
-            return;
-          }
-          case 'assignee': case 'reporter': {
-            const u = await userInTenant(q, user.tenantId, value?.accountId ?? value);
-            if (field === 'reporter' && !u) throw bad('Reporter is required');
-            const col = field === 'assignee' ? 'assignee_id' : 'reporter_id';
-            const prevName = field === 'assignee' ? row.a_name : row.r_name;
-            await set(col, u?.id ?? null, { v: row[col], s: prevName }, { v: u?.id, s: u?.display_name });
-            if (field === 'assignee' && u && u.id !== row.assignee_id) {
-              await watch(q, row.id, u.id);
-              await notify(q, { actorId: user.id, issueId: row.id, kind: 'assigned', recipients: [u.id] });
-            }
-            return;
-          }
-          case 'priority': {
-            const [pr] = await q.query(`SELECT * FROM priorities WHERE id::text = $1 OR lower(name) = lower($1)`, [
-              String(value?.id ?? value?.name ?? value),
-            ]);
-            if (!pr) throw bad('Invalid priority');
-            return set('priority_id', pr.id, { v: row.priority_id, s: row.pr_name }, { v: pr.id, s: pr.name });
-          }
-          case 'labels': {
-            const items = z.array(z.string().trim().min(1).regex(/^\S+$/)).parse(Array.isArray(value) ? value : [value]);
-            const cur: string[] = row.labels ?? [];
-            const next =
-              operation === 'ADD' ? [...new Set([...cur, ...items])]
-              : operation === 'REMOVE' ? cur.filter((l) => !items.includes(l))
-              : [...new Set(items)];
-            return set('labels', next, { s: cur }, { s: next });
-          }
-          case 'duedate': case 'startdate': {
-            const d = value == null || value === '' ? null : z.string().regex(/^\d{4}-\d{2}-\d{2}$/).parse(value);
-            const col = field === 'duedate' ? 'due_date' : 'start_date';
-            // Timeline bars need start <= due
-            const other = field === 'duedate' ? row.start_date : row.due_date;
-            if (d && other) {
-              const [start, due] = field === 'duedate' ? [toDate(other), d] : [d, toDate(other)];
-              if (start > due) throw bad('Start date must be on or before the due date', { [field]: 'order' });
-            }
-            return set(col, d, { s: row[col] ? toDate(row[col]) : null }, { s: d });
-          }
-          case 'storypoints': {
-            const n = value == null || value === '' ? null : z.coerce.number().nonnegative().parse(value);
-            // re-estimating work in the active sprint changes its scope (burndown shows it)
-            await q.query(
-              `UPDATE sprint_scope SET points = $1 WHERE issue_id = $2 AND removed_at IS NULL
-                 AND sprint_id IN (SELECT id FROM sprints WHERE state = 'active')`,
-              [n, row.id],
-            );
-            return set('story_points', n, { s: row.story_points }, { s: n });
-          }
-          case 'sprint': {
-            const id = value?.id ?? value;
-            if (row.t_level !== 0) throw bad('Only stories, tasks and bugs can be planned into a sprint');
-            return setIssueSprint(q, user.id, row, id == null || id === '' ? null : Number(id));
-          }
-          case 'parent': {
-            const k = value?.key ?? value;
-            if (k == null || k === '') return set('parent_id', null, { s: row.parent_key }, { s: null });
-            const [par] = await q.query(
-              `SELECT i.id, i.key, t.hierarchy_level FROM issues i JOIN issue_types t ON t.id = i.type_id
-               WHERE i.tenant_id = $1 AND upper(i.key) = upper($2)`,
-              [user.tenantId, String(k)],
-            );
-            if (!par) throw bad('Parent not found');
-            if (par.id === row.id) throw bad('An issue cannot be its own parent');
-            if (par.hierarchy_level !== row.t_level + 1) throw bad('Parent must be one level above this issue type');
-            return set('parent_id', par.id, { s: row.parent_key }, { s: par.key });
-          }
-          case 'issuetype': {
-            const [t] = await q.query(`SELECT * FROM issue_types WHERE project_id = $1 AND (id::text = $2 OR lower(name) = lower($2))`, [
-              row.project_id,
-              String(value?.id ?? value?.name ?? value),
-            ]);
-            if (!t) throw bad('Invalid issue type');
-            if (t.hierarchy_level !== row.t_level) throw bad('Changing hierarchy level (e.g. Task → Epic) is not supported yet');
-            return set('type_id', t.id, { v: row.type_id, s: row.t_name }, { v: t.id, s: t.name });
-          }
-          default: {
-            const m = /^customfield_(\d+)$/.exec(field);
-            if (m) {
-              const [f] = await q.query(`SELECT * FROM custom_fields WHERE id = $1 AND project_id = $2`, [Number(m[1]), row.project_id]);
-              if (!f) throw bad(`Unknown field ${field} for this space`);
-              return setValue(q, user.id, user.tenantId, row, f, value);
-            }
-            throw bad(`Field '${String(req.params.fieldId)}' cannot be edited here${field === 'status' ? ' — use transitions' : ''}`);
-          }
-        }
-      });
-      await fireAutomation(db, { type: 'field_changed', issueId: row.id, actorId: user.id, field });
+      await editField(db, user, String(req.params.key), String(req.params.fieldId), req.body);
       const { row: fresh } = await loadIssue(db, user, String(req.params.key));
       return issueJson(fresh);
     }),
@@ -422,12 +472,8 @@ export function issueRoutes(db: Db, store: FileStore) {
     '/issue/:key/transitions',
     h(async (req) => {
       const user = req.user!;
-      const { row, role } = await loadIssue(db, user, String(req.params.key));
-      if (!can(role, 'TRANSITION_ISSUES', user.isSiteAdmin)) throw forbidden('TRANSITION_ISSUES');
       const id = Number(z.object({ transition: z.object({ id: z.union([z.string(), z.number()]) }) }).parse(req.body).transition.id);
-      await db.tx((q) => applyTransition(q, user, role, row, id));
-      const [now] = await db.query(`SELECT status_id FROM issues WHERE id = $1`, [row.id]);
-      if (now && now.status_id !== row.status_id) await fireAutomation(db, { type: 'issue_transitioned', issueId: row.id, actorId: user.id, fromStatusId: row.status_id, toStatusId: now.status_id });
+      await transitionIssue(db, user, String(req.params.key), id);
       const { row: fresh } = await loadIssue(db, user, String(req.params.key));
       return issueJson(fresh);
     }),
@@ -489,20 +535,7 @@ export function issueRoutes(db: Db, store: FileStore) {
   r.delete(
     '/issue/:key',
     h(async (req, res) => {
-      const user = req.user!;
-      const { row, role } = await loadIssue(db, user, String(req.params.key));
-      if (!can(role, 'DELETE_ISSUES', user.isSiteAdmin)) throw forbidden('DELETE_ISSUES');
-      const [{ n }] = await db.query(`SELECT count(*)::int AS n FROM issues WHERE parent_id = $1`, [row.id]);
-      if (n > 0 && req.query.deleteSubtasks !== 'true') throw bad(`${row.key} has ${n} child issue(s); pass deleteSubtasks=true`);
-      const files = await db.tx(async (q) => {
-        const keys = (
-          await q.query(`SELECT storage_key FROM attachments WHERE issue_id IN (SELECT id FROM issues WHERE id = $1 OR parent_id = $1)`, [row.id])
-        ).map((a) => a.storage_key as string);
-        await q.query(`DELETE FROM issues WHERE parent_id = $1`, [row.id]);
-        await q.query(`DELETE FROM issues WHERE id = $1`, [row.id]);
-        return keys;
-      });
-      await store.remove(files); // after commit: rows are gone, so the bytes can go too
+      await deleteIssue(db, req.user!, store, String(req.params.key), req.query.deleteSubtasks === 'true');
       res.status(204).end();
       return undefined;
     }),

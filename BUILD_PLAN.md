@@ -73,6 +73,11 @@ drag-to-schedule, zoom levels, roll-up epic bars, start ≤ due rule.
 When/If/Then rules (4 triggers, JQL condition, 5 action types, smart values), audit log per rule and per issue,
 non-login Automation actor, no rule-triggers-rule loops, per-rule transactional rollback on failure.
 
+## Phase 4 — part 2 done: working in bulk
+Search column picker (incl. custom fields), bulk change (move/assign/priority/labels/sprint/delete) with per-item
+results, CSV export (formula-safe), CSV import with dry-run preview. Create/edit/transition/delete refactored into
+shared functions so REST, bulk and import enforce identical rules.
+
 ## Phase 4 — remaining candidates
-Real-time updates (SSE/WebSocket), email delivery (+ filter subscriptions), SSO, custom-field columns in
-List/Search, dependency arrows on the Timeline, CSV import/export, bulk edit, scheduled automation triggers.
+Real-time updates (SSE/WebSocket), email delivery (+ filter subscriptions), SSO, dependency arrows on the Timeline,
+scheduled automation triggers, custom-field columns in the space List view.

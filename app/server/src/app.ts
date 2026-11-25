@@ -15,6 +15,7 @@ import { customFieldRoutes } from './customfields.js';
 import { workflowRoutes } from './workflow.js';
 import { notificationRoutes } from './notifications.js';
 import { automationRoutes } from './automation.js';
+import { bulkRoutes } from './bulk.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -24,7 +25,7 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string } = {}) {
   app.disable('x-powered-by');
   const json = express.json({ limit: '1mb' });
   // uploads carry raw file bytes (any content type, including application/json) — never JSON-parse them
-  app.use((req, res, next) => (/\/attachments$/.test(req.path) ? next() : json(req, res, next)));
+  app.use((req, res, next) => (/\/attachments$|\/import$/.test(req.path) ? next() : json(req, res, next)));
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
   });
@@ -43,6 +44,7 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string } = {}) {
     workflowRoutes(db),
     notificationRoutes(db),
     automationRoutes(db),
+    bulkRoutes(db, store),
   );
   app.use('/api', (_req, res) => {
     res.status(404).json({ errorMessages: ['Not found'] });

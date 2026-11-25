@@ -475,3 +475,23 @@ code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
 .collapse-head { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; padding: 0; cursor: pointer; text-align: left; }
 .collapse-head h2 { margin: 0; }
 .automation-panel .runs { margin-top: 8px; }
+
+/* ---------- bulk change, columns, import ---------- */
+.results-bar { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.col-picker { display: flex; flex-direction: column; gap: 4px; padding: 6px 14px; max-height: 340px; overflow: auto; min-width: 230px; }
+.table th.sel, .table td.sel { width: 32px; }
+.table th.sel input, .table td.sel input { width: auto; }
+.table tr.selected td { background: var(--brand-soft); }
+.bulk-bar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 12px; margin-bottom: 8px;
+  background: var(--surface); border: 1px solid var(--brand); border-radius: 8px; box-shadow: var(--overlay); }
+.bulk-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+.menu-form { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; }
+.menu-note { padding: 4px 14px; margin: 0; }
+.modal.wide { max-width: 860px; }
+.file-pick input { display: none; }
+.file-pick { align-self: flex-start; }
+.map-chip { display: inline-block; margin: 2px 4px 2px 0; padding: 0 8px; border-radius: 10px; background: var(--done-bg); color: var(--done-fg); font-size: 12px; }
+.map-chip.ignored { background: var(--todo-bg); color: var(--todo-fg); text-decoration: line-through; }
+.import-table { max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+.row-bad td { background: #fff4f3; }
+@media (prefers-color-scheme: dark) { .row-bad td { background: #3a1a17; } }

@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet, useNavigate, useOutletContext, useParams, useSea
 import { api, ApiError, type Issue, type Project, type Sprint, type Status } from '../api';
 import { daysLeft } from './Backlog';
 import { FieldsEditor, WorkflowEditor } from './SettingsEditors';
+import { ImportDialog } from '../ImportDialog';
 import { AutomationEditor } from './Automation';
 import { PageHeader, useShell } from '../Layout';
 import { Avatar, PriorityIcon, StatusLozenge, TypeIcon, fmtDate, timeAgo, useAsync } from '../ui';
@@ -191,7 +192,8 @@ const COLUMNS: { key: string; label: string; order: string }[] = [
 
 export function List() {
   const project = useProject();
-  const { version } = useShell();
+  const { version, bump } = useShell();
+  const [importing, setImporting] = useState(false);
   const [params, setParams] = useSearchParams();
   const sort = params.get('sort') ?? 'rank';
   const dir = params.get('dir') === 'DESC' ? 'DESC' : 'ASC';
@@ -238,7 +240,9 @@ export function List() {
   return (
     <>
       <div className="toolbar"><span className="muted small">JQL: <code>{jql}</code></span><span className="grow" />
-        <Link className="btn subtle" to={`/issues?jql=${encodeURIComponent(jql)}`}>Open in search</Link></div>
+        {project.myPermissions.includes('CREATE_ISSUES') && <button className="btn subtle" onClick={() => setImporting(true)}>Import CSV</button>}
+        <Link className="btn subtle" to={`/issues?jql=${encodeURIComponent(jql)}`}>Open in search · bulk change</Link></div>
+      {importing && <ImportDialog projectKey={project.key} onClose={() => setImporting(false)} onImported={bump} />}
       {res.error && <p className="error">{res.error.message}</p>}
       <div className="table-wrap">
         <table className="table">

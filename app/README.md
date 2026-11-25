@@ -27,7 +27,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (24 checks)
+npm test           # API smoke test on an in-memory database (27 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -113,6 +113,25 @@ npm run build      # type-check server + client, production-build client
 - API: `GET|POST /api/project/:key/fields`, `PUT|DELETE /api/field/:id`; `GET /api/project/:key/workflow`,
   `POST /api/project/:key/statuses`, `PUT|DELETE /api/status/:id[?moveTo=]`, `POST /api/project/:key/transitions`,
   `PUT|DELETE /api/transition/:id`; `customfield_<id>` keys on create and `PATCH /api/issue/:key/fields/customfield_<id>`.
+
+## Phase 4 (part 2): working in bulk
+
+- **Search columns:** *Columns ▾* picks any built-in field or custom field (remembered in this browser).
+- **Bulk change:** tick rows (or *select all on this page*) → a bar offers **Move to** (by status name, so one move
+  can span spaces), **Assign**, **Priority**, **Labels** (add/remove), **Sprint** (one space at a time) and **Delete**.
+  Each item goes through exactly the same rules as editing it alone — permissions, workflow validators, History,
+  notifications and automation — and the result lists what changed and *why* anything didn't. Max 100 per action.
+- **Export CSV** (Search page): the current JQL with your chosen columns, up to 1,000 rows, only work you can see.
+  Cells starting with `= + - @` are prefixed with `'` so spreadsheets don't run them as formulas.
+- **Import CSV** (space *List* view): header row maps columns by name — Summary (required), Work type, Priority,
+  Assignee/Reporter (email or name), Labels, Description, Due/Start date (YYYY-MM-DD), Story points, Parent, Sprint,
+  any custom field by name; other columns are ignored and shown struck through. A **preview** (dry run, nothing
+  saved) flags problem rows; importing creates the good rows through the normal create path (automation runs).
+  Up to 500 rows / 2 MB. A template is downloadable from the dialog.
+- API: `POST /api/bulk {keys, action}`, `GET /api/search/columns`, `POST /api/search/table`,
+  `GET /api/search/csv?jql=&columns=`, `POST /api/project/:key/import[?dryRun=true]` (body: CSV text).
+- Internals: create / edit / transition / delete are now shared functions in `issues.ts` used by the REST routes,
+  bulk change and import, so all paths enforce the same rules.
 
 ## Phase 4 (part 1): automation rules
 

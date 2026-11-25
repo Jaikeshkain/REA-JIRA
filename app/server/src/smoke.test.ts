@@ -648,6 +648,97 @@ try {
     assert.equal((await call(admin, 'DELETE', `/automation/${r2.body.id}`)).status, 204);
   });
 
+  await test('bulk change: per-item permissions + results, transition, edit, delete', async () => {
+    const mk = async (summary: string) => (await call(dev, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary } })).body.key;
+    const keys = [await mk('Bulk A'), await mk('Bulk B'), await mk('Bulk C')];
+    // edit labels on all three (+ an unknown key → per-item error, others still succeed)
+    let r = await call(dev, 'POST', '/bulk', { keys: [...keys, 'DEMO-9999'], action: { type: 'edit', field: 'labels', operation: 'ADD', value: ['bulk'] } });
+    assert.equal(r.body.succeeded, 3);
+    assert.equal(r.body.failed, 1);
+    assert.match(r.body.results.find((x: any) => x.key === 'DEMO-9999').error, /not found/i);
+    assert.ok((await call(dev, 'GET', `/issue/${keys[1]}`)).body.fields.labels.includes('bulk'));
+    // assign + move to In Progress (Done would fail validators for unassigned ones → reported per item)
+    await call(dev, 'POST', '/bulk', { keys: keys.slice(0, 2), action: { type: 'edit', field: 'assignee', value: { accountId: '2' } } });
+    // the workflow test made Done also require Customer
+    const cust = (await call(dev, 'GET', '/project/DEMO/fields')).body.find((f: any) => f.name === 'Customer').id;
+    await call(dev, 'POST', '/bulk', { keys: keys.slice(0, 2), action: { type: 'edit', field: cust, value: 'Bulk Co' } });
+    const wf = (await call(admin, 'GET', '/project/DEMO/workflow')).body;
+    const done = wf.statuses.find((s: any) => s.name === 'Done').id;
+    r = await call(dev, 'POST', '/bulk', { keys, action: { type: 'transition', statusId: done } });
+    assert.equal(r.body.succeeded, 2, JSON.stringify(r.body));
+    assert.match(r.body.results.find((x: any) => x.key === keys[2]).error, /Fill in Assignee/);
+    // viewer: every item fails on permissions, nothing changes
+    r = await call(viewer, 'POST', '/bulk', { keys, action: { type: 'edit', field: 'priority', value: 'Low' } });
+    assert.equal(r.body.succeeded, 0);
+    assert.ok(r.body.results.every((x: any) => /EDIT_ISSUES/.test(x.error)));
+    // members cannot delete; admins can
+    assert.equal((await call(dev, 'POST', '/bulk', { keys, action: { type: 'delete' } })).body.failed, 3);
+    assert.equal((await call(admin, 'POST', '/bulk', { keys: [keys[2]], action: { type: 'delete' } })).body.succeeded, 1);
+    assert.equal((await call(admin, 'GET', `/issue/${keys[2]}`)).status, 404);
+    assert.equal((await call(dev, 'POST', '/bulk', { keys: Array.from({ length: 101 }, (_, i) => `DEMO-${i}`), action: { type: 'delete' } })).status, 400, 'max 100');
+  });
+
+  await test('CSV export (columns, custom fields, formula escaping) + table columns', async () => {
+    const custId = (await call(dev, 'GET', '/project/DEMO/fields')).body.find((f: any) => f.name === 'Customer').id;
+    await call(dev, 'PATCH', `/issue/DEMO-8/fields/${custId}`, { value: '=HYPERLINK("http://x")' });
+    const res = await fetch(`${base}/search/csv?jql=${encodeURIComponent('key = DEMO-8')}&columns=key,summary,status,labels,${custId}`, { headers: { authorization: `Bearer ${dev}` } });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type')!, /text\/csv/);
+    const text = (await res.text()).replace(/^﻿/, '');
+    const lines = text.trim().split('\r\n');
+    assert.equal(lines[0], 'Key,Summary,Status,Labels,Customer');
+    assert.ok(lines[1].startsWith('DEMO-8,Develop Transaction History Feature,'));
+    assert.ok(lines[1].endsWith(`"'=HYPERLINK(""http://x"")"`), `formula neutralised: ${lines[1]}`);
+    const outsider = (await call(null, 'POST', '/auth/login', { email: 'out2@tracker.test', password: 'longenough1' })).body.token;
+    const none = await (await fetch(`${base}/search/csv?jql=${encodeURIComponent('project = DEMO')}`, { headers: { authorization: `Bearer ${outsider}` } })).text();
+    assert.equal(none.trim().split('\r\n').length, 1, 'only the header for people without access');
+    // column catalogue + table rows with custom values
+    const cols = (await call(dev, 'GET', '/search/columns')).body;
+    assert.ok(cols.columns.some((c: any) => c.id === custId && c.label === 'Customer'));
+    const table = (await call(dev, 'POST', '/search/table', { jql: 'key = DEMO-8', columns: ['key', custId] })).body;
+    assert.equal(table.issues[0].custom[custId], '=HYPERLINK("http://x")');
+  });
+
+  await test('CSV import: dry run validates, real run creates through normal rules', async () => {
+    const csv = [
+      'Summary,Work type,Priority,Assignee,Labels,Due date,Severity,Customer,Story points',
+      'Imported task,Task,High,dev@tracker.test,"imported, csv",2026-12-31,,Initech,3',
+      '"Bug with, comma",Bug,,Dana Dev,,,S1 - Critical,,',
+      'Bad row,Task,Urgent,nobody@x.test,,31/12/2026,,,lots',
+      ',Task,,,,,,,',
+    ].join('\r\n');
+    const imp = (dry: boolean, t = dev) =>
+      fetch(`${base}/project/DEMO/import?dryRun=${dry}`, { method: 'POST', body: csv, headers: { authorization: `Bearer ${t}`, 'content-type': 'text/csv' } }).then(async (r) => ({ status: r.status, body: await r.json() }));
+    const dry = (await imp(true)).body;
+    assert.equal(dry.dryRun, true);
+    assert.deepEqual(dry.rows.map((r: any) => r.ok), [true, true, false, false]);
+    const bad = dry.rows[2].errors.join(' | ');
+    assert.match(bad, /Assignee: "nobody@x.test" is not a member/);
+    assert.match(bad, /Due date: use YYYY-MM-DD/);
+    assert.match(bad, /Story points: not a number/);
+    assert.match(dry.rows[3].errors[0], /Summary is empty/);
+    const before = (await call(dev, 'POST', '/search/jql', { jql: 'summary ~ "Imported task"' })).body.total;
+    assert.equal(before, 0, 'dry run wrote nothing');
+    const real = (await imp(false)).body;
+    assert.equal(real.ok, 2);
+    const [k1, k2] = real.rows.filter((r: any) => r.ok).map((r: any) => r.key);
+    const i1 = (await call(dev, 'GET', `/issue/${k1}`)).body;
+    assert.equal(i1.fields.priority.name, 'High');
+    assert.equal(i1.fields.assignee.displayName, 'Dana Dev');
+    assert.deepEqual(i1.fields.labels, ['imported', 'csv']);
+    assert.equal(i1.fields.duedate, '2026-12-31');
+    assert.equal(i1.fields.storypoints, 3);
+    assert.equal(i1.fields[(await call(dev, 'GET', '/project/DEMO/fields')).body.find((f: any) => f.name === 'Customer').id], 'Initech');
+    const i2 = (await call(dev, 'GET', `/issue/${k2}`)).body;
+    assert.equal(i2.fields.summary, 'Bug with, comma');
+    // the "new bugs → High + triage" automation ran for the imported bug too
+    assert.equal(i2.fields.priority.name, 'High');
+    assert.ok(i2.fields.labels.includes('triage'));
+    assert.equal((await imp(true, viewer)).status, 403);
+    const noSummary = await fetch(`${base}/project/DEMO/import?dryRun=true`, { method: 'POST', body: 'Title\r\nx', headers: { authorization: `Bearer ${dev}`, 'content-type': 'text/csv' } });
+    assert.equal(noSummary.status, 400);
+  });
+
   await test('recently viewed list', async () => {
     await call(admin, 'GET', '/issue/DEMO-2');
     const r = (await call(admin, 'GET', '/recent')).body;
