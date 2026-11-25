@@ -153,7 +153,8 @@ export function parse(src: string): Query {
 
 // ---------------------------------------------------------------- compile
 
-export interface Ctx { userId: number; tenantId: number; isSiteAdmin: boolean }
+export interface CfMeta { id: number; name: string; type: string; options: { id: string; value: string }[] }
+export interface Ctx { userId: number; tenantId: number; isSiteAdmin: boolean; customFields?: CfMeta[] }
 
 const ORDER_COLUMNS: Record<string, string> = {
   key: 'p.key, i.number', issuekey: 'p.key, i.number', created: 'i.created_at', updated: 'i.updated_at',
@@ -341,8 +342,62 @@ export function compile(q: Query, ctx: Ctx, params: unknown[]): { where: string;
         if (!['=', '!=', '<', '<=', '>', '>='].includes(op)) throw bad(`JQL: operator ${op} not supported for dates`);
         return `${col} ${op === '!=' ? '<>' : op} ${dateExpr(values[0])}`;
       }
+      default: {
+        const id = /^(?:cf\[(\d+)\]|customfield_(\d+))$/.exec(field);
+        const cfs = (ctx.customFields ?? []).filter((f) => (id ? f.id === Number(id[1] ?? id[2]) : f.name === field));
+        if (!cfs.length) throw bad(`JQL: unknown field '${field}'`, { field });
+        // a name can exist in several spaces: match any of them
+        return `(${cfs.map((f) => customClause(f, c)).join(' OR ')})`;
+      }
+    }
+  };
+
+  /** Custom field clause: values live in issue_custom_values (jsonb); empty = no row. */
+  const customClause = (f: CfMeta, c: Extract<Node, { t: 'clause' }>): string => {
+    const { op, values } = c;
+    const row = `SELECT 1 FROM issue_custom_values cv WHERE cv.issue_id = i.id AND cv.field_id = ${f.id}`;
+    const text = `(SELECT cv.value #>> '{}' FROM issue_custom_values cv WHERE cv.issue_id = i.id AND cv.field_id = ${f.id})`;
+    if (op === 'is' || op === 'is not') return `${op === 'is' ? 'NOT ' : ''}EXISTS (${row})`;
+    const neg = op === '!=' || op === 'not in' || op === '!~';
+    const wrapNeg = (pos: string) => (neg ? `(EXISTS (${row}) AND NOT ${pos})` : pos);
+    const opt = (v: Value) => {
+      const s = lit(v).toLowerCase();
+      return f.options.find((o) => o.value.toLowerCase() === s || o.id === s)?.id ?? '\u0000none';
+    };
+    switch (f.type) {
+      case 'text': case 'paragraph': {
+        if (op === '~' || op === '!~') return wrapNeg(`coalesce(${text}, '') ILIKE ${P(`%${lit(values[0]).replace(/[%_\\]/g, (m) => '\\' + m)}%`)}`);
+        if (!['=', '!=', 'in', 'not in'].includes(op)) throw bad(`JQL: operator ${op} not supported for ${f.name}`);
+        return wrapNeg(`lower(${text}) IN (${values.map((v) => `lower(${P(lit(v))})`).join(', ')})`);
+      }
+      case 'number': case 'date': {
+        const cast = f.type === 'number' ? 'numeric' : 'date';
+        const val = (v: Value) => {
+          if (f.type === 'number') {
+            const n = Number(lit(v));
+            if (!Number.isFinite(n)) throw bad(`JQL: ${f.name} expects a number`);
+            return `${P(n)}::numeric`;
+          }
+          return `(${dateExpr(v)})::date`;
+        };
+        if (['<', '<=', '>', '>='].includes(op)) return `(${text})::${cast} ${op} ${val(values[0])}`;
+        if (!['=', '!=', 'in', 'not in'].includes(op)) throw bad(`JQL: operator ${op} not supported for ${f.name}`);
+        return wrapNeg(`(${text})::${cast} IN (${values.map(val).join(', ')})`);
+      }
+      case 'select': {
+        if (!['=', '!=', 'in', 'not in'].includes(op)) throw bad(`JQL: operator ${op} not supported for ${f.name}`);
+        return wrapNeg(`${text} IN (${values.map((v) => P(opt(v))).join(', ')})`);
+      }
+      case 'multiselect': {
+        if (!['=', '!=', 'in', 'not in'].includes(op)) throw bad(`JQL: operator ${op} not supported for ${f.name}`);
+        return wrapNeg(`EXISTS (${row} AND cv.value ?| ${P(values.map(opt))}::text[])`);
+      }
+      case 'user': {
+        if (!['=', '!=', 'in', 'not in'].includes(op)) throw bad(`JQL: operator ${op} not supported for ${f.name}`);
+        return wrapNeg(`${text} IN (${values.map((v) => `(${userExpr(v)})::text`).join(', ')})`);
+      }
       default:
-        throw bad(`JQL: unknown field '${field}'`, { field });
+        throw bad(`JQL: field ${f.name} cannot be searched`);
     }
   };
 

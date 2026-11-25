@@ -11,6 +11,8 @@ import { attachmentRoutes, FileStore } from './attachments.js';
 import { errorHandler } from './http.js';
 import { filterRoutes } from './filters.js';
 import { dashboardRoutes } from './dashboards.js';
+import { customFieldRoutes } from './customfields.js';
+import { workflowRoutes } from './workflow.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -35,6 +37,8 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string } = {}) {
     attachmentRoutes(db, store),
     filterRoutes(db),
     dashboardRoutes(db),
+    customFieldRoutes(db),
+    workflowRoutes(db),
   );
   app.use('/api', (_req, res) => {
     res.status(404).json({ errorMessages: ['Not found'] });

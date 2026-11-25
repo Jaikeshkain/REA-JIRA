@@ -27,7 +27,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (20 checks)
+npm test           # API smoke test on an in-memory database (22 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -93,6 +93,29 @@ npm run build      # type-check server + client, production-build client
 - API: `GET /api/filter/search?scope=all|mine|starred`, `POST /api/filter`, `GET|PUT|DELETE /api/filter/:id`,
   `POST|DELETE /api/filter/:id/favourite`; `GET|POST /api/dashboard`, `GET|PUT|DELETE /api/dashboard/:id`,
   `POST /api/dashboard/:id/gadgets`, `PUT|DELETE /api/dashboard/:id/gadgets/:gid`, `GET /api/dashboard/:id/gadgets/:gid/data`.
+
+## Phase 3 (part 3): custom fields + workflows
+
+- **Custom fields** (Space settings → Fields, admins): short text, paragraph, number, date, dropdown, checkboxes
+  (multi-select), people. Optional description, *required when creating work*, and *applies to* specific work types.
+  Ids follow Jira (`customfield_<id>`). Fields show on the Create dialog and the issue Details panel; every change is
+  in History. Removing a dropdown option clears it from work that used it. A field's type can't change after creation,
+  and names can't shadow system fields.
+- **JQL on custom fields** by name or id: `"Severity" = "S1 - Critical"`, `"Effort hours" > 3`, `Customer ~ acme`,
+  `Platforms in (Web)`, `Reviewer = currentUser()`, `cf[3] is EMPTY`.
+- **Workflow editor** (Space settings → Workflow, admins): add / rename / re-order statuses (each is a board column; the
+  first is where new work starts), change a status's category (moving into/out of *Done* resolves/unresolves the work
+  in it), delete a status (its work moves to a status you pick, logged in History), add / remove transitions.
+- **Transition rules:** *required fields* (validator: built-ins like Assignee/Story points or any custom field) and
+  *who can use it* (condition: roles). Restricted transitions aren't offered to other roles; when a rule needs empty
+  fields, the issue page opens a "Move to …" dialog to fill them, then moves the work.
+- The transition list no longer offers the status the work is already in (Jira behaviour).
+- API: `GET|POST /api/project/:key/fields`, `PUT|DELETE /api/field/:id`; `GET /api/project/:key/workflow`,
+  `POST /api/project/:key/statuses`, `PUT|DELETE /api/status/:id[?moveTo=]`, `POST /api/project/:key/transitions`,
+  `PUT|DELETE /api/transition/:id`; `customfield_<id>` keys on create and `PATCH /api/issue/:key/fields/customfield_<id>`.
+
+The demo space has **Severity** (dropdown, Bugs only) and **Customer** (text) fields, and moving to **Done**
+requires an **Assignee**.
 
 The demo site also has three shared filters and a **DEMO team dashboard** with all four gadget types.
 

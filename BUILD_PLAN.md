@@ -61,7 +61,10 @@ thumbnails/preview, sandboxed downloads, size limit, cleanup on delete.
 Filters with private/space/site sharing and stars; dashboards with 4 gadget types, owner-only layout editing,
 viewer-scoped gadget data. (Filter email subscriptions need email delivery — deferred with notifications.)
 
+## Phase 3 — part 3 done: custom fields + workflows
+7 custom field types with required/applies-to, History, JQL by name/id; workflow editor for statuses (order, category,
+delete-with-move) and transitions with validator (required fields) + condition (roles) rules and a transition dialog.
+
 ## Queued (Phase 3, remaining)
-1. Custom fields + workflow editor (statuses/transitions, "field required" rule)
-2. Notifications (in-app bell: assigned, @mention, comments/status on watched issues) + Timeline view
-3. Later: automation, real-time updates, email (+ filter subscriptions), SSO
+1. Notifications (in-app bell: assigned, @mention, comments/status on watched issues) + Timeline view
+2. Later: automation, real-time updates, email (+ filter subscriptions), SSO, custom-field columns in List/Search

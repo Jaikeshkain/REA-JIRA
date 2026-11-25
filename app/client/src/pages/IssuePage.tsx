@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, ApiError, type Comment, type Issue, type Priority, type Sprint, type User } from '../api';
+import { api, ApiError, type Comment, type Issue, type Priority, type Sprint, type Transition, type User } from '../api';
+import { BUILTIN_LABELS, BuiltinInput, CustomFieldInput, inputValue, isMissing, rawValue } from '../fields';
 import { useAuth } from '../auth';
 import { useShell } from '../Layout';
 import { Attachments, LinkedItems } from '../IssueExtras';
@@ -20,6 +21,7 @@ export function IssuePage() {
   const [tab, setTab] = useState<'comments' | 'history'>('comments');
   const [statusOpen, setStatusOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [needs, setNeeds] = useState<{ transition: Transition; fields: string[] } | null>(null);
   const [editDesc, setEditDesc] = useState<string | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
 
@@ -176,7 +178,13 @@ export function IssuePage() {
               </button>
               <Popover open={statusOpen} onClose={() => setStatusOpen(false)}>
                 {issue.transitions?.filter((t) => t.to.id !== f.status.id).map((t) => (
-                  <button key={t.id} role="menuitem" className="menu-item" onClick={() => { setStatusOpen(false); run(() => api.transition(key, t.id)); }}>
+                  <button key={t.id} role="menuitem" className="menu-item" onClick={() => {
+                    setStatusOpen(false);
+                    // validator: ask for required fields that are still empty before moving
+                    const missing = (t.requiredFields ?? []).filter((id) => isMissing(issue, id));
+                    if (missing.length) setNeeds({ transition: t, fields: missing });
+                    else run(() => api.transition(key, t.id));
+                  }}>
                     <StatusLozenge status={t.to} />
                   </button>
                 ))}
@@ -254,12 +262,76 @@ export function IssuePage() {
               <input type="number" min={0} step={0.5} defaultValue={f.storypoints ?? ''} key={String(f.storypoints)} disabled={!can('EDIT_ISSUES')} aria-label="Story points"
                 onBlur={(e) => String(f.storypoints ?? '') !== e.target.value && edit('storypoints', e.target.value === '' ? null : Number(e.target.value))} />
             </Field>
+            {issue.customFields?.map((cf) => (
+              <Field key={cf.id} label={cf.name + (cf.required ? ' *' : '')}>
+                <CustomFieldInput field={cf} value={rawValue(cf, (f as any)[cf.id])} users={users} disabled={!can('EDIT_ISSUES')}
+                  onCommit={(v) => edit(cf.id, v)} />
+              </Field>
+            ))}
             <Field label="Reporter"><span className="user-cell"><Avatar user={f.reporter} size={20} /> {f.reporter?.displayName}</span></Field>
             <Field label="Resolution">{f.resolution?.name ?? 'Unresolved'}</Field>
           </section>
           <p className="muted small">Created {timeAgo(f.created)}<br />Updated {timeAgo(f.updated)}{f.duedate ? <><br />Due {fmtDate(f.duedate)}</> : null}</p>
         </aside>
       </div>
+      {needs && (
+        <TransitionFields issue={issue} users={users} priorities={priorities} transition={needs.transition} fields={needs.fields}
+          onClose={() => setNeeds(null)}
+          onDone={() => { setNeeds(null); load(); bump(); }} />
+      )}
+    </div>
+  );
+}
+
+/** Transition screen: fill the fields a workflow rule requires, then move the work item. */
+function TransitionFields({ issue, users, priorities, transition, fields, onClose, onDone }: {
+  issue: Issue; users: User[]; priorities: Priority[]; transition: Transition; fields: string[]; onClose: () => void; onDone: () => void;
+}) {
+  const [values, setValues] = useState<Record<string, any>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const cfs = issue.customFields ?? [];
+  const ready = fields.every((id) => {
+    const v = values[id];
+    return v != null && v !== '' && !(Array.isArray(v) && v.length === 0);
+  });
+  return (
+    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <form className="modal narrow" role="dialog" aria-modal="true" aria-label={`Move to ${transition.to.name}`} onSubmit={async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        setError(null);
+        try {
+          for (const id of fields) await api.editField(issue.key, id, values[id]);
+          await api.transition(issue.key, transition.id);
+          onDone();
+        } catch (err) {
+          setError(err instanceof ApiError ? err.message : String(err));
+        } finally {
+          setBusy(false);
+        }
+      }}>
+        <header className="modal-head"><h1>Move to <StatusLozenge status={transition.to} /></h1>
+          <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>✕</button></header>
+        <div className="modal-body">
+          <p className="muted">This step needs a few more details first.</p>
+          {fields.map((id) => {
+            const cf = cfs.find((c) => c.id === id);
+            return (
+              <label key={id}>{cf?.name ?? BUILTIN_LABELS[id] ?? id}*
+                {cf
+                  ? <CustomFieldInput field={cf} value={values[id] == null ? (cf.type === 'multiselect' ? [] : '') : inputValue(values[id])} users={users} autoCommit={false} onCommit={(v) => setValues((x) => ({ ...x, [id]: v }))} />
+                  : <BuiltinInput id={id} users={users} priorities={priorities} onChange={(v) => setValues((x) => ({ ...x, [id]: v }))} />}
+              </label>
+            );
+          })}
+          {error && <p className="error" role="alert">{error}</p>}
+        </div>
+        <footer className="modal-foot"><span className="grow" />
+          <button type="button" className="btn subtle" onClick={onClose}>Cancel</button>
+          <button className="btn primary" disabled={!ready || busy}>{busy ? 'Moving…' : transition.name}</button>
+        </footer>
+      </form>
     </div>
   );
 }

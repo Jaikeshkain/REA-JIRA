@@ -9,6 +9,8 @@ import { sanitizeAdf, adfToText } from './adf.js';
 import { rankBetween } from './lexorank.js';
 import { parse, compile, FROM } from './jql.js';
 import { setIssueSprint } from './sprints.js';
+import { transitionsFor, applyTransition, trJson } from './workflow.js';
+import { appliesTo, cfKey, fieldJson, fieldsOf, jqlCtx, normalise, setValue, valuesFor } from './customfields.js';
 import { linksFor } from './links.js';
 import { attachmentsFor, type FileStore } from './attachments.js';
 
@@ -96,36 +98,6 @@ async function userInTenant(q: Db, tenantId: number, accountId: unknown): Promis
   return u;
 }
 
-async function transitionsFor(db: Db, projectId: number, statusId: number) {
-  return db.query(
-    `SELECT tr.id, tr.name, s.id AS to_id, s.name AS to_name, s.category AS to_category
-     FROM transitions tr JOIN statuses s ON s.id = tr.to_status_id
-     WHERE tr.project_id = $1 AND (tr.from_status_id IS NULL OR tr.from_status_id = $2)
-     ORDER BY s.position`,
-    [projectId, statusId],
-  );
-}
-
-/** Apply a status transition inside a transaction: status, resolution, changelog. */
-async function applyTransition(q: Db, user: AuthUser, issue: any, transitionId: number) {
-  const [tr] = await q.query(
-    `SELECT tr.*, s.name AS to_name, s.category AS to_category FROM transitions tr JOIN statuses s ON s.id = tr.to_status_id
-     WHERE tr.id = $1 AND tr.project_id = $2 AND (tr.from_status_id IS NULL OR tr.from_status_id = $3)`,
-    [transitionId, issue.project_id, issue.status_id],
-  );
-  if (!tr) throw bad(`Transition ${transitionId} is not valid for ${issue.key} in its current status`);
-  if (tr.to_status_id === issue.status_id) return;
-  const resolution = tr.to_category === 'done' ? 'Done' : null;
-  await q.query(
-    `UPDATE issues SET status_id = $1, resolution = $2,
-       resolved_at = CASE WHEN $2::text IS NULL THEN NULL ELSE coalesce(resolved_at, now()) END, updated_at = now()
-     WHERE id = $3`,
-    [tr.to_status_id, resolution, issue.id],
-  );
-  await logChange(q, issue.id, user.id, 'status', { v: issue.status_id, s: issue.s_name }, { v: tr.to_status_id, s: tr.to_name });
-  await logChange(q, issue.id, user.id, 'resolution', { s: issue.resolution }, { s: resolution });
-}
-
 // ------------------------------------------------------------------ validation
 
 const Ref = z.object({ id: z.union([z.string(), z.number()]).optional(), key: z.string().optional(), name: z.string().optional() });
@@ -144,7 +116,7 @@ const CreateIssue = z.object({
     startdate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
     storypoints: z.number().nonnegative().nullish(),
     sprint: z.object({ id: z.union([z.string(), z.number()]) }).nullish(),
-  }),
+  }).passthrough(), // customfield_<id> keys are validated against the space's fields
   watchers: z.array(z.union([z.string(), z.number()])).optional(),
 });
 const FieldEdit = z.object({ operation: z.enum(['SET', 'ADD', 'REMOVE']).default('SET'), value: z.any() });
@@ -213,6 +185,22 @@ export function issueRoutes(db: Db, store: FileStore) {
         const reporter = fields.reporter ? await userInTenant(q, user.tenantId, fields.reporter.accountId) : { id: user.id };
         if (fields.reporter && reporter!.id !== user.id && !can(role, 'MODIFY_REPORTER', user.isSiteAdmin)) throw forbidden('MODIFY_REPORTER');
 
+        // custom fields: validate every supplied value and enforce "required" for this work type
+        const cfs = await fieldsOf(q, project.id);
+        const cfValues: { id: number; value: unknown }[] = [];
+        for (const f of cfs) {
+          const raw = (fields as Record<string, unknown>)[cfKey(f.id)];
+          if (!appliesTo(f, type.id)) {
+            if (raw != null) throw bad(`${f.name} does not apply to ${type.name}`, { [cfKey(f.id)]: 'not applicable' });
+            continue;
+          }
+          const v = await normalise(q, user.tenantId, f, raw);
+          if (v == null && f.required) throw bad(`${f.name} is required`, { [cfKey(f.id)]: 'required' });
+          if (v != null) cfValues.push({ id: f.id, value: v });
+        }
+        const unknown = Object.keys(fields).filter((k) => /^customfield_/.test(k) && !cfs.some((f) => cfKey(f.id) === k));
+        if (unknown.length) throw bad(`Unknown field ${unknown[0]} for this space`);
+
         const [first] = await q.query(`SELECT id FROM statuses WHERE project_id = $1 ORDER BY position LIMIT 1`, [project.id]);
         // Atomic per-project counter → stable key KEY-N
         const [{ issue_counter: n }] = await q.query(
@@ -235,6 +223,9 @@ export function issueRoutes(db: Db, store: FileStore) {
         if (fields.sprint?.id != null) {
           if (type.hierarchy_level !== 0) throw bad('Only stories, tasks and bugs can be planned into a sprint', { sprint: 'invalid type' });
           await setIssueSprint(q, user.id, { id: row.id, project_id: project.id, sprint_id: null }, Number(fields.sprint.id));
+        }
+        for (const cv of cfValues) {
+          await q.query(`INSERT INTO issue_custom_values (issue_id, field_id, value) VALUES ($1,$2,$3::jsonb)`, [row.id, cv.id, JSON.stringify(cv.value)]);
         }
         const watcherIds = new Set<number>([user.id, ...(watchers ?? []).map(Number)]);
         for (const w of watcherIds) {
@@ -266,10 +257,14 @@ export function issueRoutes(db: Db, store: FileStore) {
           can(role, p as any, user.isSiteAdmin),
         ]),
       );
-      if (expand.includes('transitions')) out.transitions = (await transitionsFor(db, row.project_id, row.status_id)).map(trJson);
+      if (expand.includes('transitions')) out.transitions = (await transitionsFor(db, user, role, row.project_id, row.status_id)).map(trJson);
       if (expand.includes('changelog')) out.changelog = await changelogFor(db, row.id);
       out.fields.issuelinks = await linksFor(db, user, row.id);
       out.fields.attachment = await attachmentsFor(db, row.id);
+      // custom fields that apply to this work type: definitions + values (customfield_<id>)
+      const cfs = (await fieldsOf(db, row.project_id)).filter((f) => appliesTo(f, row.type_id));
+      out.customFields = cfs.map(fieldJson);
+      Object.assign(out.fields, await valuesFor(db, row.id, cfs));
       out.permissions.LINK_ISSUES = can(role, 'LINK_ISSUES', user.isSiteAdmin);
       out.permissions.CREATE_ATTACHMENTS = can(role, 'CREATE_ATTACHMENTS', user.isSiteAdmin);
       out.permissions.DELETE_OWN_ATTACHMENTS = can(role, 'DELETE_OWN_ATTACHMENTS', user.isSiteAdmin);
@@ -375,8 +370,15 @@ export function issueRoutes(db: Db, store: FileStore) {
             if (t.hierarchy_level !== row.t_level) throw bad('Changing hierarchy level (e.g. Task → Epic) is not supported yet');
             return set('type_id', t.id, { v: row.type_id, s: row.t_name }, { v: t.id, s: t.name });
           }
-          default:
+          default: {
+            const m = /^customfield_(\d+)$/.exec(field);
+            if (m) {
+              const [f] = await q.query(`SELECT * FROM custom_fields WHERE id = $1 AND project_id = $2`, [Number(m[1]), row.project_id]);
+              if (!f) throw bad(`Unknown field ${field} for this space`);
+              return setValue(q, user.id, user.tenantId, row, f, value);
+            }
             throw bad(`Field '${String(req.params.fieldId)}' cannot be edited here${field === 'status' ? ' — use transitions' : ''}`);
+          }
         }
       });
       const { row: fresh } = await loadIssue(db, user, String(req.params.key));
@@ -387,8 +389,9 @@ export function issueRoutes(db: Db, store: FileStore) {
   r.get(
     '/issue/:key/transitions',
     h(async (req) => {
-      const { row } = await loadIssue(db, req.user!, String(req.params.key));
-      return { transitions: (await transitionsFor(db, row.project_id, row.status_id)).map(trJson) };
+      const user = req.user!;
+      const { row, role } = await loadIssue(db, user, String(req.params.key));
+      return { transitions: (await transitionsFor(db, user, role, row.project_id, row.status_id)).map(trJson) };
     }),
   );
 
@@ -399,7 +402,7 @@ export function issueRoutes(db: Db, store: FileStore) {
       const { row, role } = await loadIssue(db, user, String(req.params.key));
       if (!can(role, 'TRANSITION_ISSUES', user.isSiteAdmin)) throw forbidden('TRANSITION_ISSUES');
       const id = Number(z.object({ transition: z.object({ id: z.union([z.string(), z.number()]) }) }).parse(req.body).transition.id);
-      await db.tx((q) => applyTransition(q, user, row, id));
+      await db.tx((q) => applyTransition(q, user, role, row, id));
       const { row: fresh } = await loadIssue(db, user, String(req.params.key));
       return issueJson(fresh);
     }),
@@ -433,7 +436,7 @@ export function issueRoutes(db: Db, store: FileStore) {
             [row.project_id, Number(body.statusId), row.status_id],
           );
           if (!tr) throw bad('No transition to that status from the current one');
-          await applyTransition(q, user, row, tr.id);
+          await applyTransition(q, user, role, row, tr.id);
         }
         if (body.prevKey !== undefined || body.nextKey !== undefined) {
           if (!can(role, 'SCHEDULE_ISSUES', user.isSiteAdmin)) throw forbidden('SCHEDULE_ISSUES');
@@ -575,7 +578,7 @@ export function issueRoutes(db: Db, store: FileStore) {
     const startAt = Math.max(0, Number(src.startAt ?? 0) || 0);
     const maxResults = Math.min(200, Math.max(1, Number(src.maxResults ?? 50) || 50));
     const params: unknown[] = [];
-    const { where, order } = compile(parse(jql), { userId: user.id, tenantId: user.tenantId, isSiteAdmin: user.isSiteAdmin }, params);
+    const { where, order } = compile(parse(jql), await jqlCtx(db, user), params);
     const [{ total }] = await db.query(`SELECT count(*)::int AS total ${FROM} WHERE ${where}`, params);
     const rows = await db.query(
       `${SELECT_FROM} WHERE ${where} ORDER BY ${order} LIMIT ${maxResults} OFFSET ${startAt}`,
@@ -601,12 +604,6 @@ export function issueRoutes(db: Db, store: FileStore) {
 
   return r;
 }
-
-const trJson = (t: any) => ({
-  id: String(t.id),
-  name: t.name,
-  to: { id: String(t.to_id), name: t.to_name, statusCategory: { key: t.to_category } },
-});
 
 const commentJson = (c: any) => ({
   id: String(c.id),

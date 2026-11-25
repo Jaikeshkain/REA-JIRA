@@ -130,6 +130,24 @@ export async function seed(db: Db) {
     for (const [i, [type, col, config]] of gadgets.entries()) {
       await q.query(`INSERT INTO gadgets (dashboard_id, type, col, position, config) VALUES ($1,$2,$3,$4,$5)`, [dash.id, type, col, i, config]);
     }
+    // ---- Phase 3 demo: custom fields + a workflow rule
+    const bugType = types.Bug;
+    const sev = [
+      { id: 's1', value: 'S1 - Critical' }, { id: 's2', value: 'S2 - Major' }, { id: 's3', value: 'S3 - Minor' }, { id: 's4', value: 'S4 - Trivial' },
+    ];
+    const [fSev] = await q.query(
+      `INSERT INTO custom_fields (project_id, name, description, type, options, required, issue_type_ids, position)
+       VALUES ($1,'Severity','How bad is the impact?','select',$2::jsonb,false,$3,0) RETURNING id`,
+      [p.id, JSON.stringify(sev), [bugType]],
+    );
+    const [fCust] = await q.query(
+      `INSERT INTO custom_fields (project_id, name, description, type, position) VALUES ($1,'Customer','Who asked for this','text',1) RETURNING id`,
+      [p.id],
+    );
+    await q.query(`INSERT INTO issue_custom_values (issue_id, field_id, value) VALUES ($1,$2,'"s1"'::jsonb)`, [ids[10], fSev.id]);
+    await q.query(`INSERT INTO issue_custom_values (issue_id, field_id, value) VALUES ($1,$2,'"Acme Bank"'::jsonb)`, [ids[6], fCust.id]);
+    // validator: work needs an assignee before it can be Done
+    await q.query(`UPDATE transitions SET required_fields = '{assignee}' WHERE project_id = $1 AND to_status_id = $2`, [p.id, st.Done]);
     // DEMO-12 finished on day 2 so the burndown has a step
     await q.query(`UPDATE issues SET resolved_at = $1 WHERE id = $2`, [new Date(start.getTime() + 2 * day).toISOString(), ids[11]]);
     await q.query(`INSERT INTO comments (issue_id, author_id, body) VALUES ($1,$2,$3)`, [

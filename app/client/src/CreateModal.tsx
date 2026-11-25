@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { api, ApiError, type Priority, type Project, type ProjectSummary, type User } from './api';
+import { api, ApiError, type CustomField, type Priority, type Project, type ProjectSummary, type User } from './api';
+import { CustomFieldInput, inputValue } from './fields';
 
 /**
  * Global "Create" dialog. Fields follow the order observed in Jira's create-modal layout
@@ -20,6 +21,8 @@ export function CreateModal({ defaultProject, onClose, onCreated }: {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [parents, setParents] = useState<{ key: string; summary: string }[]>([]);
+  const [cfs, setCfs] = useState<CustomField[]>([]);
+  const [cfValues, setCfValues] = useState<Record<string, any>>({});
 
   useEffect(() => {
     api.projects().then((ps) => {
@@ -40,9 +43,12 @@ export function CreateModal({ defaultProject, onClose, onCreated }: {
       setForm((f) => ({ ...f, type: p.issueTypes.find((t) => t.name === 'Task')?.id ?? p.issueTypes[0]?.id ?? '' }));
     });
     api.assignable(projectKey).then(setUsers).catch(() => setUsers([]));
+    api.fields(projectKey).then(setCfs).catch(() => setCfs([]));
+    setCfValues({});
   }, [projectKey]);
 
   const type = project?.issueTypes.find((t) => t.id === form.type);
+  const typeFields = cfs.filter((f) => !f.issueTypeIds || f.issueTypeIds.includes(form.type));
   useEffect(() => {
     if (!type || type.hierarchyLevel >= 1) { setParents([]); return; }
     const parentType = type.hierarchyLevel === 0 ? 'Epic' : undefined;
@@ -69,6 +75,7 @@ export function CreateModal({ defaultProject, onClose, onCreated }: {
         priority: { name: form.priority },
         labels: form.labels.split(/[\s,]+/).filter(Boolean),
         duedate: form.duedate || undefined,
+        ...Object.fromEntries(typeFields.map((f) => [f.id, cfValues[f.id] === '' ? undefined : cfValues[f.id]])),
       });
       onCreated(r.key);
       if (another) setForm((f) => ({ ...f, summary: '', description: '' }));
@@ -135,6 +142,17 @@ export function CreateModal({ defaultProject, onClose, onCreated }: {
               <input type="date" value={form.duedate} onChange={set('duedate')} />
             </label>
           </div>
+          {typeFields.length > 0 && (
+            <div className="cf-grid">
+              {typeFields.map((f) => (
+                <label key={f.id}>{f.name}{f.required ? '*' : ''}
+                  <CustomFieldInput field={f} value={cfValues[f.id] == null ? (f.type === 'multiselect' ? [] : '') : inputValue(cfValues[f.id])} users={users} autoCommit={false}
+                    onCommit={(v) => setCfValues((x) => ({ ...x, [f.id]: v }))} />
+                  {f.description && <span className="muted small">{f.description}</span>}
+                </label>
+              ))}
+            </div>
+          )}
           {error && <p className="error" role="alert">{error}</p>}
         </div>
         <footer className="modal-foot">

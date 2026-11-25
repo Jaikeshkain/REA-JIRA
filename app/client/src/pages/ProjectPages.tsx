@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Outlet, useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router-dom';
 import { api, ApiError, type Issue, type Project, type Sprint, type Status } from '../api';
 import { daysLeft } from './Backlog';
+import { FieldsEditor, WorkflowEditor } from './SettingsEditors';
 import { PageHeader, useShell } from '../Layout';
 import { Avatar, PriorityIcon, StatusLozenge, TypeIcon, fmtDate, timeAgo, useAsync } from '../ui';
 
@@ -328,7 +329,20 @@ export function Settings() {
       setMsg(err instanceof ApiError ? err.message : String(err));
     }
   };
+  const [tab, setTab] = useState<'access' | 'fields' | 'workflow'>('access');
+  const tabs = (
+    <div className="tabs small" role="tablist" aria-label="Space settings">
+      {(['access', 'fields', 'workflow'] as const).map((t) => (
+        <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>
+          {{ access: 'Access & features', fields: 'Fields', workflow: 'Workflow' }[t]}
+        </button>
+      ))}
+    </div>
+  );
+  if (tab === 'fields') return <>{tabs}<FieldsEditor project={project} /></>;
+  if (tab === 'workflow') return <>{tabs}<div className="stack">{<WorkflowEditor project={project} />}</div></>;
   return (
+    <>{tabs}
     <div className="settings">
       <section className="panel">
         <h2>Access</h2>
@@ -356,11 +370,12 @@ export function Settings() {
           Sprints — plan work in fixed time boxes; adds Backlog and Reports, and the board shows the active sprint
         </label>
         <h2 style={{ marginTop: 16 }}>Workflow</h2>
-        <p className="muted small">Team-managed: any status can move to any other status.</p>
         <div className="workflow">{project.statuses.map((s) => <StatusLozenge key={s.id} status={s} />)}</div>
-        <h2>Work types</h2>
+        <button className="link-btn" onClick={() => setTab('workflow')}>Edit workflow →</button>
+        <h2 style={{ marginTop: 16 }}>Work types</h2>
         <ul className="plain">{project.issueTypes.map((t) => <li key={t.id}><TypeIcon type={t} /> {t.name} <span className="muted small">level {t.hierarchyLevel}</span></li>)}</ul>
       </section>
     </div>
+    </>
   );
 }

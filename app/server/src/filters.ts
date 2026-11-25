@@ -11,6 +11,7 @@ import { h, bad, notFound, forbidden } from './http.js';
 import { projectByKey, roleIn, userRef } from './access.js';
 import { can } from './permissions.js';
 import { parse, compile } from './jql.js';
+import { jqlCtx } from './customfields.js';
 
 export type Share = 'private' | 'project' | 'site';
 
@@ -20,8 +21,8 @@ export const visibleTo = (alias: string, u: string, t: string) => `(${alias}.ten
   OR (${alias}.share = 'project' AND EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = ${alias}.project_id AND pm.user_id = ${u}))))`;
 
 /** Validate JQL by compiling it for this user; returns the parse error message as a 400. */
-export function checkJql(jql: string, user: AuthUser) {
-  compile(parse(jql), { userId: user.id, tenantId: user.tenantId, isSiteAdmin: user.isSiteAdmin }, []);
+export async function checkJql(db: Db, jql: string, user: AuthUser) {
+  compile(parse(jql), await jqlCtx(db, user), []);
 }
 
 export async function resolveShare(db: Db, user: AuthUser, share: Share, projectKey?: string | null) {
@@ -90,7 +91,7 @@ export function filterRoutes(db: Db) {
     h(async (req, res) => {
       const user = req.user!;
       const body = FilterInput.parse(req.body);
-      checkJql(body.jql, user);
+      await checkJql(db, body.jql, user);
       const projectId = await resolveShare(db, user, body.share, body.projectKey);
       const dup = await db.query(`SELECT 1 FROM filters WHERE tenant_id = $1 AND owner_id = $2 AND lower(name) = lower($3)`, [user.tenantId, user.id, body.name]);
       if (dup.length) throw bad(`You already have a filter named "${body.name}"`, { name: 'taken' });
@@ -114,7 +115,7 @@ export function filterRoutes(db: Db) {
       const f = await loadFilter(db, user, String(req.params.id));
       if (f.owner_id !== user.id) throw forbidden('Only the owner can edit this filter');
       const body = FilterInput.partial().parse(req.body ?? {});
-      if (body.jql) checkJql(body.jql, user);
+      if (body.jql) await checkJql(db, body.jql, user);
       const share = body.share ?? f.share;
       const projectId = body.share || body.projectKey !== undefined ? await resolveShare(db, user, share, body.projectKey ?? f.project_key) : f.project_id;
       if (body.name && body.name.toLowerCase() !== f.name.toLowerCase()) {

@@ -33,10 +33,21 @@ export interface Issue {
   };
   children?: Issue[];
   transitions?: Transition[];
+  customFields?: CustomField[];
   changelog?: ChangeEntry[];
   permissions?: Record<string, boolean>;
 }
-export interface Transition { id: string; name: string; to: { id: string; name: string; statusCategory: StatusCat } }
+export interface Transition { id: string; name: string; to: { id: string; name: string; statusCategory: StatusCat }; requiredFields?: string[] }
+export type CfType = 'text' | 'paragraph' | 'number' | 'date' | 'select' | 'multiselect' | 'user';
+export interface CustomField {
+  id: string; fieldId: string; name: string; description: string; type: CfType;
+  options: { id: string; value: string }[]; required: boolean; issueTypeIds: string[] | null; position: number;
+}
+export interface Workflow {
+  statuses: (Status & { position: number; issueCount: number })[];
+  transitions: { id: string; name: string; from: string | null; to: string; requiredFields: string[]; allowedRoles: string[] | null }[];
+  requirableFields: { id: string; name: string }[];
+}
 export interface ChangeEntry { id: string; author: User; created: string; items: { field: string; fromString: string | null; toString: string | null }[] }
 export interface Comment { id: string; author: User; body: Adf; created: string; updated: string }
 export interface ProjectSummary { id: string; key: string; name: string; description: string; lead: User | null; myRole: string | null; issueCount: number }
@@ -178,6 +189,21 @@ export const api = {
     call<Gadget>('PUT', `/dashboard/${id}/gadgets/${gid}`, body),
   removeGadget: (id: string, gid: string) => call('DELETE', `/dashboard/${id}/gadgets/${gid}`),
   gadgetData: (id: string, gid: string) => call<GadgetData>('GET', `/dashboard/${id}/gadgets/${gid}/data`),
+  fields: (key: string) => call<CustomField[]>('GET', `/project/${key}/fields`),
+  createField: (key: string, body: Partial<Omit<CustomField, 'options'>> & { options?: { id?: string; value: string }[] }) =>
+    call<CustomField>('POST', `/project/${key}/fields`, body),
+  updateField: (fieldId: string, body: Partial<Omit<CustomField, 'options'>> & { options?: { id?: string; value: string }[] }) =>
+    call<CustomField>('PUT', `/field/${fieldId}`, body),
+  deleteField: (fieldId: string) => call('DELETE', `/field/${fieldId}`),
+  workflow: (key: string) => call<Workflow>('GET', `/project/${key}/workflow`),
+  addStatus: (key: string, name: string, category: string) => call<Workflow>('POST', `/project/${key}/statuses`, { name, category }),
+  updateStatus: (id: string, body: { name?: string; category?: string; position?: number }) => call<Workflow>('PUT', `/status/${id}`, body),
+  deleteStatus: (id: string, moveTo?: string) => call<Workflow>('DELETE', `/status/${id}${moveTo ? `?moveTo=${moveTo}` : ''}`),
+  addTransition: (key: string, body: { name?: string; from: string | null; to: string; requiredFields?: string[]; allowedRoles?: string[] | null }) =>
+    call<Workflow>('POST', `/project/${key}/transitions`, body),
+  updateTransition: (id: string, body: { name?: string; requiredFields?: string[]; allowedRoles?: string[] | null }) =>
+    call<Workflow>('PUT', `/transition/${id}`, body),
+  deleteTransition: (id: string) => call<Workflow>('DELETE', `/transition/${id}`),
   linkTypes: () => call<{ issueLinkTypes: LinkType[] }>('GET', '/issueLinkType'),
   createLink: (type: string, outwardKey: string, inwardKey: string) =>
     call<{ id: string }>('POST', '/issueLink', { type: { name: type }, outwardIssue: { key: outwardKey }, inwardIssue: { key: inwardKey } }),

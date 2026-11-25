@@ -88,7 +88,7 @@ try {
     assert.equal(i.fields.status.name, 'To Do');
     assert.equal(i.fields.watches.isWatching, true);
     assert.equal(i.fields.description.content[1].type, 'bulletList');
-    assert.equal(i.transitions.length, 4);
+    assert.equal(i.transitions.length, 3); // excludes the current status
   });
 
   await test('subtask requires parent; hierarchy is enforced', async () => {
@@ -122,7 +122,8 @@ try {
     const r = await call(dev, 'POST', `/issue/${key}/transitions`, { transition: { id: done.id } });
     assert.equal(r.body.fields.status.name, 'Done');
     assert.equal(r.body.fields.resolution.name, 'Done');
-    const todo = tr.find((t: any) => t.to.name === 'To Do');
+    const fromDone = (await call(dev, 'GET', `/issue/${key}/transitions`)).body.transitions;
+    const todo = fromDone.find((t: any) => t.to.name === 'To Do');
     const r2 = await call(dev, 'POST', `/issue/${key}/transitions`, { transition: { id: todo.id } });
     assert.equal(r2.body.fields.resolution, null);
   });
@@ -419,6 +420,112 @@ try {
     // private dashboard invisible to others
     assert.equal((await call(viewer, 'GET', `/dashboard/${d.body.id}`)).status, 404);
     assert.equal((await call(dev, 'DELETE', `/dashboard/${d.body.id}`)).status, 204);
+  });
+
+  await test('custom fields: types, applicability, history, required, options, JQL', async () => {
+    const fields = (await call(dev, 'GET', '/project/DEMO/fields')).body;
+    assert.deepEqual(fields.map((f: any) => f.name), ['Severity', 'Customer']);
+    const sev = fields[0].id, cust = fields[1].id;
+    const bug = (await call(dev, 'GET', '/issue/DEMO-11')).body;
+    assert.equal(bug.fields[sev].value, 'S1 - Critical');
+    assert.ok(bug.customFields.some((f: any) => f.id === sev));
+    const task = (await call(dev, 'GET', '/issue/DEMO-7')).body;
+    assert.ok(!task.customFields.some((f: any) => f.id === sev), 'Severity applies to Bugs only');
+    assert.equal(task.fields[cust], 'Acme Bank');
+    assert.equal((await call(dev, 'PATCH', `/issue/DEMO-7/fields/${sev}`, { value: 's1' })).status, 400);
+    // edit + history
+    const ed = await call(dev, 'PATCH', `/issue/DEMO-11/fields/${sev}`, { value: 'S2 - Major' });
+    assert.equal(ed.status, 200, JSON.stringify(ed.body));
+    const hist = (await call(dev, 'GET', '/issue/DEMO-11?expand=changelog')).body.changelog[0].items[0];
+    assert.deepEqual([hist.field, hist.fromString, hist.toString], ['Severity', 'S1 - Critical', 'S2 - Major']);
+    assert.equal((await call(dev, 'PATCH', `/issue/DEMO-11/fields/${sev}`, { value: 'S9' })).status, 400);
+    // admin-only field management; reserved names
+    assert.equal((await call(dev, 'POST', '/project/DEMO/fields', { name: 'Effort hours', type: 'number' })).status, 403);
+    assert.equal((await call(admin, 'POST', '/project/DEMO/fields', { name: 'Status', type: 'text' })).status, 400);
+    assert.equal((await call(admin, 'POST', '/project/DEMO/fields', { name: 'Platforms', type: 'multiselect' })).status, 400, 'choice needs options');
+    const effort = (await call(admin, 'POST', '/project/DEMO/fields', { name: 'Effort hours', type: 'number' })).body.id;
+    const plat = (await call(admin, 'POST', '/project/DEMO/fields', { name: 'Platforms', type: 'multiselect', options: [{ value: 'iOS' }, { value: 'Android' }, { value: 'Web' }] })).body.id;
+    const rev = (await call(admin, 'POST', '/project/DEMO/fields', { name: 'Reviewer', type: 'user' })).body.id;
+    // create with custom values; required enforced
+    const mk = (extra: object) => call(dev, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'CF test', ...extra } });
+    const created = await mk({ [cust]: 'Globex', [effort]: 5, [plat]: ['iOS', 'Web'], [rev]: { accountId: '1' } });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const ci = (await call(dev, 'GET', `/issue/${created.body.key}`)).body;
+    assert.equal(ci.fields[effort], 5);
+    assert.deepEqual(ci.fields[plat].map((o: any) => o.value), ['iOS', 'Web']);
+    assert.equal(ci.fields[rev].displayName, 'Alex Admin');
+    assert.equal((await mk({ [effort]: 'lots' })).status, 400);
+    assert.equal((await mk({ customfield_99999: 'x' })).status, 400);
+    await call(admin, 'PUT', `/field/${cust.split('_')[1]}`, { required: true });
+    assert.equal((await mk({})).status, 400, 'Customer now required');
+    await call(admin, 'PUT', `/field/${cust.split('_')[1]}`, { required: false });
+    // JQL on custom fields
+    const q = async (jql: string) => (await call(admin, 'POST', '/search/jql', { jql })).body;
+    assert.deepEqual((await q('Severity = "S2 - Major"')).issues.map((i: any) => i.key), ['DEMO-11']);
+    assert.deepEqual((await q('"Effort hours" > 3')).issues.map((i: any) => i.key), [created.body.key]);
+    assert.equal((await q('Customer ~ glob')).total, 1);
+    assert.equal((await q('Platforms in (Web)')).total, 1);
+    assert.equal((await q('Reviewer = currentUser()')).total, 1);
+    assert.equal((await q(`cf[${sev.split('_')[1]}] is not EMPTY`)).total, 1);
+    assert.equal((await q('Severity = "S2 - Major" AND Customer is EMPTY')).total, 1);
+    // removing an option clears values that used it
+    const sevField = fields[0];
+    await call(admin, 'PUT', `/field/${sevField.fieldId}`, { options: sevField.options.filter((o: any) => o.id !== 's2') });
+    assert.equal((await call(dev, 'GET', '/issue/DEMO-11')).body.fields[sev], null);
+  });
+
+  await test('workflow: validators, role conditions, status editing', async () => {
+    const wf = (await call(dev, 'GET', '/project/DEMO/workflow')).body;
+    assert.deepEqual(wf.statuses.map((s: any) => s.name), ['To Do', 'In Progress', 'In Review', 'Done']);
+    const done = wf.statuses.find((s: any) => s.name === 'Done');
+    const toDone = wf.transitions.find((t: any) => t.to === done.id);
+    assert.deepEqual(toDone.requiredFields, ['assignee']);
+    // validator: DEMO-6 is unassigned
+    const trs = (await call(dev, 'GET', '/issue/DEMO-6/transitions')).body.transitions;
+    const tDone = trs.find((t: any) => t.to.name === 'Done');
+    assert.deepEqual(tDone.requiredFields, ['assignee']);
+    const fail = await call(dev, 'POST', '/issue/DEMO-6/transitions', { transition: { id: tDone.id } });
+    assert.equal(fail.status, 400);
+    assert.match(fail.body.errorMessages[0], /Fill in Assignee before moving to Done/);
+    assert.deepEqual(fail.body.errors.missing, ['assignee']);
+    // members cannot edit the workflow
+    assert.equal((await call(dev, 'POST', '/project/DEMO/statuses', { name: 'QA', category: 'in_progress' })).status, 403);
+    // add a status → reachable by default, shows as a board column
+    let w = (await call(admin, 'POST', '/project/DEMO/statuses', { name: 'QA', category: 'in_progress' })).body;
+    const qa = w.statuses.find((s: any) => s.name === 'QA');
+    assert.ok(w.transitions.some((t: any) => t.to === qa.id && t.from === null));
+    assert.ok((await call(dev, 'GET', '/project/DEMO/board')).body.columns.some((c: any) => c.status.name === 'QA'));
+    // condition: only admins may move to QA
+    const toQa = w.transitions.find((t: any) => t.to === qa.id);
+    w = (await call(admin, 'PUT', `/transition/${toQa.id}`, { allowedRoles: ['admin'] })).body;
+    assert.ok(!(await call(dev, 'GET', '/issue/DEMO-6/transitions')).body.transitions.some((t: any) => t.to.name === 'QA'));
+    assert.equal((await call(dev, 'POST', '/issue/DEMO-6/transitions', { transition: { id: toQa.id } })).status, 403);
+    assert.equal((await call(admin, 'POST', '/issue/DEMO-6/transitions', { transition: { id: toQa.id } })).body.fields.status.name, 'QA');
+    // validators can require custom fields; unknown fields rejected
+    assert.equal((await call(admin, 'PUT', `/transition/${toDone.id}`, { requiredFields: ['assignee', 'bogus'] })).status, 400);
+    const custId = (await call(dev, 'GET', '/project/DEMO/fields')).body.find((f: any) => f.name === 'Customer').id;
+    await call(admin, 'PUT', `/transition/${toDone.id}`, { requiredFields: ['assignee', custId] });
+    await call(admin, 'PATCH', '/issue/DEMO-6/fields/assignee', { value: { accountId: '2' } });
+    const miss = await call(admin, 'POST', '/issue/DEMO-6/transitions', { transition: { id: toDone.id } });
+    assert.match(miss.body.errorMessages[0], /Fill in Customer before moving to Done/);
+    await call(admin, 'PATCH', `/issue/DEMO-6/fields/${custId}`, { value: 'Initech' });
+    assert.equal((await call(admin, 'POST', '/issue/DEMO-6/transitions', { transition: { id: toDone.id } })).body.fields.resolution.name, 'Done');
+    // reorder + recategorise: In Review → done category resolves its work
+    const review = w.statuses.find((s: any) => s.name === 'In Review');
+    w = (await call(admin, 'PUT', `/status/${qa.id}`, { position: 2 })).body;
+    assert.deepEqual(w.statuses.map((s: any) => s.name), ['To Do', 'In Progress', 'QA', 'In Review', 'Done']);
+    await call(admin, 'PUT', `/status/${review.id}`, { name: 'Review', category: 'done' });
+    const inReview = (await call(admin, 'POST', '/search/jql', { jql: 'status = Review' })).body.issues;
+    assert.ok(inReview.length > 0 && inReview.every((i: any) => i.fields.resolution?.name === 'Done'));
+    await call(admin, 'PUT', `/status/${review.id}`, { category: 'in_progress' });
+    assert.ok((await call(admin, 'POST', '/search/jql', { jql: 'status = Review' })).body.issues.every((i: any) => !i.fields.resolution));
+    // delete a status with work: must choose where it goes
+    await call(admin, 'POST', '/issue/DEMO-6/transitions', { transition: { id: toQa.id } });
+    assert.equal((await call(admin, 'DELETE', `/status/${qa.id}`)).status, 400);
+    const todo = w.statuses.find((s: any) => s.name === 'To Do');
+    w = (await call(admin, 'DELETE', `/status/${qa.id}?moveTo=${todo.id}`)).body;
+    assert.ok(!w.statuses.some((s: any) => s.name === 'QA'));
+    assert.equal((await call(admin, 'GET', '/issue/DEMO-6')).body.fields.status.name, 'To Do');
   });
 
   await test('recently viewed list', async () => {

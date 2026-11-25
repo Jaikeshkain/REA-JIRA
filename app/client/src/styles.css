@@ -372,3 +372,14 @@ code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
   .issue-row > :nth-child(4), .issue-row > :nth-child(7) { display: none; }
   .column { flex-basis: 85vw; }
 }
+
+/* ---------- custom fields + workflow editor ---------- */
+.cf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.checks { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.check.small-check { font-size: 13px; font-weight: 400; color: var(--text); gap: 6px; }
+.option-row { display: flex; gap: 6px; align-items: center; }
+.inline-edit { border-width: 1px; padding: 3px 6px; max-width: 220px; }
+.nowrap { white-space: nowrap; }
+.stack { display: flex; flex-direction: column; gap: 16px; }
+.modal-head h1 .lozenge { vertical-align: middle; font-size: 12px; }
+@media (max-width: 700px) { .cf-grid { grid-template-columns: 1fr; } }

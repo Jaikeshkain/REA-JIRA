@@ -260,6 +260,37 @@ CREATE TABLE IF NOT EXISTS gadgets (
 );
 CREATE INDEX IF NOT EXISTS gadgets_dashboard ON gadgets(dashboard_id, col, position);
 
+-- ---------------------------------------------------------------- Phase 3: custom fields + workflow rules
+
+-- type: text | paragraph | number | date | select | multiselect | user
+-- options (select/multiselect): [{"id":"o1","value":"S1 - Critical"}, ...]; issue_type_ids NULL = all work types
+CREATE TABLE IF NOT EXISTS custom_fields (
+  id              SERIAL PRIMARY KEY,
+  project_id      INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name            TEXT NOT NULL,
+  description     TEXT NOT NULL DEFAULT '',
+  type            TEXT NOT NULL CHECK (type IN ('text','paragraph','number','date','select','multiselect','user')),
+  options         JSONB NOT NULL DEFAULT '[]',
+  required        BOOLEAN NOT NULL DEFAULT false,
+  issue_type_ids  INT[],
+  position        INT NOT NULL DEFAULT 0,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS custom_fields_name ON custom_fields(project_id, lower(name));
+
+-- One row per (issue, field); empty values are deleted rather than stored
+CREATE TABLE IF NOT EXISTS issue_custom_values (
+  issue_id  INT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+  field_id  INT NOT NULL REFERENCES custom_fields(id) ON DELETE CASCADE,
+  value     JSONB NOT NULL,
+  PRIMARY KEY (issue_id, field_id)
+);
+CREATE INDEX IF NOT EXISTS issue_custom_values_field ON issue_custom_values(field_id);
+
+-- Transition rules: validator (fields that must be filled) + condition (roles allowed; NULL = anyone who can transition)
+ALTER TABLE transitions ADD COLUMN IF NOT EXISTS required_fields TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE transitions ADD COLUMN IF NOT EXISTS allowed_roles TEXT[];
+
 CREATE TABLE IF NOT EXISTS recent_views (
   user_id      INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   entity_type  TEXT NOT NULL,

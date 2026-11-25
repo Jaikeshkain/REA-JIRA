@@ -18,6 +18,7 @@ import { userRef } from './access.js';
 import { parse, compile, FROM } from './jql.js';
 import { visibleTo, resolveShare, loadFilter } from './filters.js';
 import { issueJson, SELECT_FROM } from './issues.js';
+import { jqlCtx } from './customfields.js';
 
 export const GADGET_TYPES = ['filter-results', 'breakdown', 'created-vs-resolved', 'assigned-to-me'] as const;
 const BREAKDOWN_FIELDS: Record<string, string> = {
@@ -66,9 +67,9 @@ async function ownDash(db: Db, user: AuthUser, id: string) {
 }
 
 /** Compile JQL for this viewer → `{ where, params }` usable after `${FROM}`. */
-function scoped(jql: string, user: AuthUser) {
+async function scoped(db: Db, jql: string, user: AuthUser) {
   const params: unknown[] = [];
-  const { where, order } = compile(parse(jql), { userId: user.id, tenantId: user.tenantId, isSiteAdmin: user.isSiteAdmin }, params);
+  const { where, order } = compile(parse(jql), await jqlCtx(db, user), params);
   return { where, order, params };
 }
 
@@ -224,7 +225,7 @@ export function dashboardRoutes(db: Db) {
         case 'filter-results':
         case 'assigned-to-me': {
           const jql = filter?.jql ?? 'assignee = currentUser() AND resolution = Unresolved ORDER BY priority DESC, updated DESC';
-          const { where, order, params } = scoped(jql, user);
+          const { where, order, params } = await scoped(db, jql, user);
           const [{ total }] = await db.query(`SELECT count(*)::int AS total ${FROM} WHERE ${where}`, params);
           const max = Number(cfg.max ?? 10);
           const rows = await db.query(
@@ -234,7 +235,7 @@ export function dashboardRoutes(db: Db) {
           return { source, jql, total, issues: rows.map(issueJson) };
         }
         case 'breakdown': {
-          const { where, params } = scoped(filter.jql, user);
+          const { where, params } = await scoped(db, filter.jql, user);
           const field = String(cfg.field ?? 'status');
           let rows: any[];
           if (field === 'labels') {
@@ -254,7 +255,7 @@ export function dashboardRoutes(db: Db) {
           return { source, field, total, groups: rows.map((x) => ({ name: field === 'statusCategory' ? CAT[x.name] ?? x.name : x.name, count: x.count })) };
         }
         case 'created-vs-resolved': {
-          const { where, params } = scoped(filter.jql, user);
+          const { where, params } = await scoped(db, filter.jql, user);
           const days = Number(cfg.days ?? 30);
           params.push(days);
           const n = `$${params.length}`;
