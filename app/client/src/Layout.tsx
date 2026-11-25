@@ -93,6 +93,8 @@ export function Layout() {
             </button>
             <Popover open={menu} onClose={() => setMenu(false)} align="right">
               <div className="menu-head"><strong>{user?.displayName}</strong><span className="muted small">{user?.emailAddress}</span></div>
+              <button className="menu-item" onClick={() => { setMenu(false); nav('/settings/notifications'); }}>Notification settings</button>
+              {user?.isSiteAdmin && <button className="menu-item" onClick={() => { setMenu(false); nav('/admin/outbox'); }}>Email outbox</button>}
               <button className="menu-item" onClick={() => { setMenu(false); signOut(); }}>Log out</button>
             </Popover>
           </div>

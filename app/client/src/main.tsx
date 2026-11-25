@@ -14,6 +14,7 @@ import { Reports } from './pages/Reports';
 import { Timeline } from './pages/Timeline';
 import { Filters } from './pages/Filters';
 import { DashboardList, DashboardView } from './pages/Dashboards';
+import { NotificationSettings, Outbox } from './pages/Email';
 
 function App() {
   const { user, ready } = useAuth();
@@ -41,6 +42,8 @@ function App() {
         <Route path="/filters" element={<Filters />} />
         <Route path="/dashboards" element={<DashboardList />} />
         <Route path="/dashboards/:id" element={<DashboardView />} />
+        <Route path="/settings/notifications" element={<NotificationSettings />} />
+        <Route path="/admin/outbox" element={<Outbox />} />
         <Route path="*" element={<div className="page"><h1>Page not found</h1></div>} />
       </Route>
     </Routes>

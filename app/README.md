@@ -27,7 +27,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (28 checks)
+npm test           # API smoke test on an in-memory database (30 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -113,6 +113,25 @@ npm run build      # type-check server + client, production-build client
 - API: `GET|POST /api/project/:key/fields`, `PUT|DELETE /api/field/:id`; `GET /api/project/:key/workflow`,
   `POST /api/project/:key/statuses`, `PUT|DELETE /api/status/:id[?moveTo=]`, `POST /api/project/:key/transitions`,
   `PUT|DELETE /api/transition/:id`; `customfield_<id>` keys on create and `PATCH /api/issue/:key/fields/customfield_<id>`.
+
+## Phase 4 (part 4): email + scheduled work
+
+- **Email notifications.** Each person chooses in **Account → Notification settings**: *Immediately* (one email per
+  batch of updates, about a minute after they happen), *Daily digest* (once a day at `DIGEST_HOUR_UTC`, default 08:00
+  UTC) or *Off*. Anything already read in the app is never emailed, and nothing is emailed twice.
+- **Filter subscriptions.** On a saved filter, **Subscribe** emails its results (up to 50 work items) every day or
+  every week at a chosen hour (UTC). It runs **as the subscriber**, so people only get work they can see; by default
+  no email is sent when nothing matches. Unsubscribe from the same dialog.
+- **Scheduled automation.** A new **Scheduled** trigger (every hour, every day or every Monday at a chosen hour UTC)
+  runs the rule's actions on each work item in the space that matches its JQL condition (required, max 100 per run),
+  as the Automation user, with the same audit log and rollback.
+- **Delivery.** Set `SMTP_URL` (e.g. `smtp://user:pass@smtp.example.com:587`, plus optional `MAIL_FROM` and `APP_URL`
+  for links) to send real email; failed sends retry with backoff up to 5 times. Without it, emails stay in a built-in
+  **outbox** that site admins can read (**Account → Email outbox**, HTML preview in a sandboxed frame) — so
+  development never sends anything. All user text in emails is HTML-escaped.
+- **Scheduler.** One background pass every minute (`DISABLE_SCHEDULER=1` turns it off); everything it needs to know
+  (`next_run_at`, `emailed_at`) lives in the database, so restarts don't lose or repeat work. Admins can run it now
+  from the outbox page.
 
 ## Phase 4 (part 3): real-time updates
 

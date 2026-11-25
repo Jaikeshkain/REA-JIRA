@@ -87,7 +87,8 @@ export type AutoTrigger =
   | { type: 'issue_created' }
   | { type: 'issue_transitioned'; toStatusId?: string | null; fromStatusId?: string | null }
   | { type: 'field_changed'; field: string }
-  | { type: 'comment_added' };
+  | { type: 'comment_added' }
+  | { type: 'scheduled'; every: 'hour' | 'day' | 'week'; hourUtc?: number };
 export type AutoAction =
   | { type: 'transition'; statusId: string }
   | { type: 'assign'; to: string }
@@ -96,8 +97,13 @@ export type AutoAction =
   | { type: 'comment'; text: string };
 export interface AutomationRule {
   id: string; name: string; enabled: boolean; trigger: AutoTrigger; condition: string | null; actions: AutoAction[];
-  owner: User; updated: string; stats: { runs: number; errors: number; lastRun: string | null };
+  owner: User; updated: string; stats: { runs: number; errors: number; lastRun: string | null }; nextRun?: string | null;
 }
+export type EmailPref = 'immediate' | 'digest' | 'off';
+export interface Preferences { emailNotifications: EmailPref; emailMode: 'smtp' | 'outbox'; digestHourUtc: number }
+export interface FilterSubscription { id: string; filterId: string; frequency: 'daily' | 'weekly'; hourUtc: number; weekday: number | null; emailWhenEmpty: boolean; nextRun: string; lastRun: string | null }
+export interface OutboxEmail { id: string; to: string; kind: string; subject: string; status: 'queued' | 'sent' | 'outbox' | 'failed'; attempts: number; error: string | null; created: string; sent: string | null; text: string; html: string }
+export type TickResult = { skipped: true } | { notifications: number; subscriptions: number; rules: { rules: number; items: number }; delivery: { sent: number; failed: number } };
 export interface AutomationRun {
   id: string; status: 'success' | 'no_action' | 'error'; message: string; actions: string[]; created: string;
   rule: { id: string; name: string }; issue: { key: string; summary: string } | null; initiator: User | null;
@@ -242,6 +248,14 @@ export const api = {
   deleteTransition: (id: string) => call<Workflow>('DELETE', `/transition/${id}`),
   notifications: (tab: 'direct' | 'watching' | 'all' = 'all', limit = 30) => call<Inbox>('GET', `/notifications?tab=${tab}&limit=${limit}`),
   markRead: (body: { ids?: string[]; all?: boolean; tab?: 'direct' | 'watching' | 'all' }) => call('POST', '/notifications/read', body),
+  preferences: () => call<Preferences>('GET', '/myself/preferences'),
+  setPreferences: (emailNotifications: EmailPref) => call<Preferences>('PUT', '/myself/preferences', { emailNotifications }),
+  subscriptions: (filterId: string) => call<FilterSubscription[]>('GET', `/filter/${filterId}/subscriptions`),
+  subscribe: (filterId: string, body: { frequency: 'daily' | 'weekly'; hourUtc: number; weekday: number | null; emailWhenEmpty: boolean }) =>
+    call<FilterSubscription>('POST', `/filter/${filterId}/subscriptions`, body),
+  unsubscribe: (id: string) => call('DELETE', `/subscription/${id}`),
+  outbox: () => call<{ mode: 'smtp' | 'outbox'; emails: OutboxEmail[] }>('GET', '/admin/emails'),
+  runScheduler: () => call<TickResult>('POST', '/admin/scheduler/run'),
   rules: (key: string) => call<AutomationRule[]>('GET', `/project/${key}/automation`),
   createRule: (key: string, body: { name: string; enabled?: boolean; trigger: AutoTrigger; condition?: string | null; actions: AutoAction[] }) =>
     call<AutomationRule>('POST', `/project/${key}/automation`, body),

@@ -82,6 +82,11 @@ shared functions so REST, bulk and import enforce identical rules.
 SSE hub with per-space/per-user scoping, publish-after-commit change tracking for all write routes, live board/
 list/issue refresh, instant bell, Live indicator with reconnect. Single-instance hub (scale-out needs pub/sub).
 
+## Phase 4 — part 4 done: email + scheduled work
+Per-person email preference (immediate / daily digest / off), filter subscriptions run as the subscriber,
+scheduled automation trigger (hourly/daily/weekly + required JQL), SMTP delivery with retries or a dev outbox for
+site admins, one DB-driven background scheduler.
+
 ## Phase 4 — remaining candidates
-Email delivery (+ filter subscriptions), SSO, dependency arrows on the Timeline, scheduled automation triggers,
-custom-field columns in the space List view, multi-instance real-time (Postgres LISTEN/NOTIFY).
+SSO, dependency arrows on the Timeline, custom-field columns in the space List view, multi-instance real-time
+and scheduler (Postgres LISTEN/NOTIFY + advisory lock).

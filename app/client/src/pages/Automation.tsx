@@ -9,6 +9,7 @@ const TRIGGERS: { type: AutoTrigger['type']; label: string }[] = [
   { type: 'issue_transitioned', label: 'Work item transitioned' },
   { type: 'field_changed', label: 'Field value changed' },
   { type: 'comment_added', label: 'Comment added' },
+  { type: 'scheduled', label: 'Scheduled' },
 ];
 const ACTIONS: { type: AutoAction['type']; label: string }[] = [
   { type: 'transition', label: 'Transition work item' },
@@ -32,6 +33,7 @@ function describe(r: Pick<AutomationRule, 'trigger' | 'condition' | 'actions'>, 
     t.type === 'issue_created' ? 'work is created'
     : t.type === 'issue_transitioned' ? `work moves${t.fromStatusId ? ` from ${st(t.fromStatusId)}` : ''} to ${t.toStatusId ? st(t.toStatusId) : 'any status'}`
     : t.type === 'field_changed' ? `${fieldName(t.field)} changes`
+    : t.type === 'scheduled' ? (t.every === 'hour' ? 'every hour' : `every ${t.every === 'week' ? 'Monday' : 'day'} at ${String(t.hourUtc ?? 8).padStart(2, '0')}:00 UTC`) + ', for each matching work item'
     : 'someone comments';
   const who = (to: string) => (to === 'reporter' ? 'the reporter' : to === 'initiator' ? 'the person who triggered it' : to === 'unassigned' ? 'nobody' : c.project.members.find((m) => m.accountId === to)?.displayName ?? 'someone');
   const then = r.actions.map((a) =>
@@ -87,6 +89,7 @@ export function AutomationEditor({ project }: { project: Project }) {
                   <div className="muted small">
                     {r.stats.runs} run{r.stats.runs === 1 ? '' : 's'}{r.stats.errors ? <span className="danger-text"> · {r.stats.errors} failed</span> : null}
                     {r.stats.lastRun && <> · last {timeAgo(r.stats.lastRun)}</>}
+                    {r.trigger.type === 'scheduled' && r.enabled && r.nextRun && <> · next {new Date(r.nextRun).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}</>}
                   </div>
                 </div>
                 <div className="nowrap">
@@ -151,7 +154,7 @@ function RuleDialog({ ctx, rule, onClose, onSaved }: { ctx: Ctx; rule: Automatio
             <legend><span className="step-badge when">When</span> Trigger</legend>
             <select aria-label="Trigger" value={trigger.type} onChange={(e) => {
               const t = e.target.value as AutoTrigger['type'];
-              setTrigger(t === 'field_changed' ? { type: t, field: 'assignee' } : t === 'issue_transitioned' ? { type: t, toStatusId: null, fromStatusId: null } : { type: t } as AutoTrigger);
+              setTrigger(t === 'field_changed' ? { type: t, field: 'assignee' } : t === 'issue_transitioned' ? { type: t, toStatusId: null, fromStatusId: null } : t === 'scheduled' ? { type: t, every: 'day', hourUtc: 8 } : { type: t } as AutoTrigger);
             }}>
               {TRIGGERS.map((t) => <option key={t.type} value={t.type}>{t.label}</option>)}
             </select>
@@ -159,6 +162,22 @@ function RuleDialog({ ctx, rule, onClose, onSaved }: { ctx: Ctx; rule: Automatio
               <div className="row2">
                 <label>From {statusSelect(trigger.fromStatusId, (v) => setTrigger({ ...trigger, fromStatusId: v }), 'Any status', 'From status')}</label>
                 <label>To {statusSelect(trigger.toStatusId, (v) => setTrigger({ ...trigger, toStatusId: v }), 'Any status', 'To status')}</label>
+              </div>
+            )}
+            {trigger.type === 'scheduled' && (
+              <div className="row2">
+                <label>Run
+                  <select aria-label="Schedule" value={trigger.every} onChange={(e) => setTrigger({ ...trigger, every: e.target.value as 'hour' | 'day' | 'week' })}>
+                    <option value="hour">Every hour</option><option value="day">Every day</option><option value="week">Every week (Monday)</option>
+                  </select>
+                </label>
+                {trigger.every !== 'hour' && (
+                  <label>At
+                    <select aria-label="Hour (UTC)" value={trigger.hourUtc ?? 8} onChange={(e) => setTrigger({ ...trigger, hourUtc: Number(e.target.value) })}>
+                      {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{String(h).padStart(2, '0')}:00 UTC</option>)}
+                    </select>
+                  </label>
+                )}
               </div>
             )}
             {trigger.type === 'field_changed' && (
@@ -172,9 +191,11 @@ function RuleDialog({ ctx, rule, onClose, onSaved }: { ctx: Ctx; rule: Automatio
           </fieldset>
 
           <fieldset className="rule-step">
-            <legend><span className="step-badge if">If</span> Condition (optional)</legend>
+            <legend><span className="step-badge if">If</span> Condition{trigger.type === 'scheduled' ? '*' : ' (optional)'}</legend>
             <input className="jql-input" aria-label="JQL condition" placeholder='e.g. type = Bug AND priority >= High' value={condition} onChange={(e) => setCondition(e.target.value)} spellCheck={false} />
-            <span className="muted small">JQL the work item must match. Leave empty to always run.</span>
+            <span className="muted small">{trigger.type === 'scheduled'
+              ? 'Required for scheduled rules: the actions run on each work item in this space that matches (up to 100 per run).'
+              : 'JQL the work item must match. Leave empty to always run.'}</span>
           </fieldset>
 
           <fieldset className="rule-step">

@@ -20,7 +20,7 @@ import { applyTransition } from './workflow.js';
 import { notify, watch, watchersOf, linkMentions, mentionedIds, excerpt } from './notifications.js';
 import { textToAdf, adfToText } from './adf.js';
 
-export type TriggerType = 'issue_created' | 'issue_transitioned' | 'field_changed' | 'comment_added';
+export type TriggerType = 'issue_created' | 'issue_transitioned' | 'field_changed' | 'comment_added' | 'scheduled';
 export interface AutomationEvent {
   type: TriggerType;
   issueId: number;
@@ -71,7 +71,7 @@ export async function fireAutomation(db: Db, ev: AutomationEvent) {
   }
 }
 
-async function runRule(db: Db, rule: any, ev: AutomationEvent, botId: number, tenantId: number) {
+export async function runRule(db: Db, rule: any, ev: AutomationEvent, botId: number, tenantId: number) {
   const t = rule.trigger ?? {};
   if (ev.type === 'issue_transitioned') {
     if (t.toStatusId && Number(t.toStatusId) !== ev.toStatusId) return;
@@ -214,6 +214,8 @@ const Trigger = z.discriminatedUnion('type', [
   z.object({ type: z.literal('issue_transitioned'), toStatusId: z.string().nullish(), fromStatusId: z.string().nullish() }),
   z.object({ type: z.literal('field_changed'), field: z.string().min(1) }),
   z.object({ type: z.literal('comment_added') }),
+  // runs on a schedule for every work item matching the rule's JQL (condition required)
+  z.object({ type: z.literal('scheduled'), every: z.enum(['hour', 'day', 'week']), hourUtc: z.number().int().min(0).max(23).optional() }),
 ]);
 const Action = z.discriminatedUnion('type', [
   z.object({ type: z.literal('transition'), statusId: z.string() }),
@@ -230,8 +232,41 @@ const RuleInput = z.object({
   actions: z.array(Action).min(1).max(10),
 });
 
+/** Next run for a scheduled trigger strictly after `from` (UTC): top of next hour / next day at hourUtc / next Monday. */
+export function nextRun(t: { every: 'hour' | 'day' | 'week'; hourUtc?: number }, from: Date): Date {
+  const d = new Date(from);
+  d.setUTCMinutes(0, 0, 0);
+  if (t.every === 'hour') { d.setUTCHours(d.getUTCHours() + 1); return d; }
+  const hour = t.hourUtc ?? 8;
+  d.setUTCHours(hour);
+  if (d <= from) d.setUTCDate(d.getUTCDate() + 1);
+  if (t.every === 'week') while (d.getUTCDay() !== 1) d.setUTCDate(d.getUTCDate() + 1);
+  return d;
+}
+
+/** Run one scheduled rule now: every matching work item (max 100 per run), as the Automation user. */
+export async function runScheduledRule(db: Db, rule: any, now: Date) {
+  const [p] = await db.query(`SELECT tenant_id FROM projects WHERE id = $1`, [rule.project_id]);
+  if (!p) return 0;
+  const botId = await botFor(db, p.tenant_id);
+  const bot: AuthUser = { id: botId, tenantId: p.tenant_id, email: BOT_EMAIL, displayName: 'Automation', avatarColor: '#626f86', isSiteAdmin: true };
+  let ids: number[] = [];
+  try {
+    const params: unknown[] = [rule.project_id];
+    const { where } = compile(parse(rule.condition_jql ?? ''), { ...(await jqlCtx(db, bot)), isSiteAdmin: true }, params);
+    ids = (await db.query(`SELECT i.id ${FROM} WHERE i.project_id = $1 AND ${where} ORDER BY i.id LIMIT 100`, params)).map((r) => r.id);
+  } catch (e: any) {
+    await db.query(`INSERT INTO automation_runs (rule_id, status, message) VALUES ($1,'error',$2)`, [rule.id, `Condition: ${e?.message ?? e}`]);
+  }
+  if (!ids.length) await db.query(`INSERT INTO automation_runs (rule_id, status, message) VALUES ($1,'no_action','No work items matched')`, [rule.id]);
+  // the JQL already selected the items, so each run skips the per-item condition re-check
+  for (const id of ids) await runRule(db, { ...rule, condition_jql: null }, { type: 'scheduled', issueId: id, actorId: botId }, botId, p.tenant_id);
+  await db.query(`UPDATE automation_rules SET next_run_at = $2 WHERE id = $1`, [rule.id, nextRun(rule.trigger, now).toISOString()]);
+  return ids.length;
+}
+
 const ruleJson = (r: any) => ({
-  id: String(r.id), name: r.name, enabled: r.enabled, trigger: r.trigger, condition: r.condition_jql, actions: r.actions,
+  id: String(r.id), name: r.name, enabled: r.enabled, trigger: r.trigger, condition: r.condition_jql, actions: r.actions, nextRun: r.next_run_at,
   owner: userRef(r.created_by, r.owner_name), updated: r.updated_at,
   stats: { runs: r.runs ?? 0, errors: r.errors ?? 0, lastRun: r.last_run ?? null },
 });
@@ -246,6 +281,7 @@ export function automationRoutes(db: Db) {
       if (!ok.length) throw bad('Status not found in this space');
     };
     if (body.trigger.type === 'issue_transitioned') { await status(body.trigger.toStatusId); await status(body.trigger.fromStatusId); }
+    if (body.trigger.type === 'scheduled' && !body.condition) throw bad('Scheduled rules need a JQL condition to choose the work items', { condition: 'required' });
     if (body.condition) compile(parse(body.condition), await jqlCtx(db, user), []);
     for (const a of body.actions) {
       if (a.type === 'transition') await status(a.statusId);
@@ -294,8 +330,9 @@ export function automationRoutes(db: Db) {
     const body = RuleInput.parse(req.body);
     await validate(p.id, user, body);
     const [rule] = await db.query(
-      `INSERT INTO automation_rules (project_id, name, enabled, trigger, condition_jql, actions, created_by) VALUES ($1,$2,$3,$4::jsonb,$5,$6::jsonb,$7) RETURNING id`,
-      [p.id, body.name, body.enabled ?? true, JSON.stringify(body.trigger), body.condition || null, JSON.stringify(body.actions), user.id],
+      `INSERT INTO automation_rules (project_id, name, enabled, trigger, condition_jql, actions, created_by, next_run_at) VALUES ($1,$2,$3,$4::jsonb,$5,$6::jsonb,$7,$8) RETURNING id`,
+      [p.id, body.name, body.enabled ?? true, JSON.stringify(body.trigger), body.condition || null, JSON.stringify(body.actions), user.id,
+        body.trigger.type === 'scheduled' ? nextRun(body.trigger, new Date()).toISOString() : null],
     );
     res.status(201);
     return ruleJson((await db.query(`${LIST} WHERE ar.id = $1`, [rule.id]))[0]);
@@ -311,8 +348,11 @@ export function automationRoutes(db: Db) {
     };
     await validate(rule.project_id, user, RuleInput.parse(merged));
     await db.query(
-      `UPDATE automation_rules SET name = $1, enabled = $2, trigger = $3::jsonb, condition_jql = $4, actions = $5::jsonb, updated_at = now() WHERE id = $6`,
-      [merged.name, merged.enabled, JSON.stringify(merged.trigger), merged.condition || null, JSON.stringify(merged.actions), rule.id],
+      `UPDATE automation_rules SET name = $1, enabled = $2, trigger = $3::jsonb, condition_jql = $4, actions = $5::jsonb, updated_at = now(),
+         next_run_at = CASE WHEN $7::text IS NULL THEN NULL WHEN trigger = $3::jsonb AND next_run_at IS NOT NULL THEN next_run_at ELSE $7::timestamptz END
+       WHERE id = $6`,
+      [merged.name, merged.enabled, JSON.stringify(merged.trigger), merged.condition || null, JSON.stringify(merged.actions), rule.id,
+        merged.trigger.type === 'scheduled' ? nextRun(merged.trigger as any, new Date()).toISOString() : null],
     );
     return ruleJson((await db.query(`${LIST} WHERE ar.id = $1`, [rule.id]))[0]);
   }));

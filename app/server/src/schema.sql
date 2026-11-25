@@ -341,6 +341,50 @@ CREATE TABLE IF NOT EXISTS automation_runs (
 CREATE INDEX IF NOT EXISTS automation_runs_rule ON automation_runs(rule_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS automation_runs_issue ON automation_runs(issue_id, created_at DESC);
 
+-- ---------------------------------------------------------------- Phase 4: email + scheduler
+
+-- email_pref: immediate (batched each minute) | digest (daily) | off
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_pref TEXT NOT NULL DEFAULT 'immediate';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_digest_at TIMESTAMPTZ;
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS emailed_at TIMESTAMPTZ;
+
+-- Outbox: every email is a row; the scheduler delivers queued rows (SMTP) or keeps them (dev outbox)
+CREATE TABLE IF NOT EXISTS emails (
+  id           SERIAL PRIMARY KEY,
+  tenant_id    INT NOT NULL REFERENCES tenants(id),
+  to_user_id   INT REFERENCES users(id) ON DELETE SET NULL,
+  to_email     TEXT NOT NULL,
+  kind         TEXT NOT NULL,
+  subject      TEXT NOT NULL,
+  text_body    TEXT NOT NULL,
+  html_body    TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','sent','outbox','failed')),
+  attempts     INT NOT NULL DEFAULT 0,
+  error        TEXT,
+  next_try_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  sent_at      TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS emails_queue ON emails(status, next_try_at);
+
+-- Filter subscriptions: email a filter's results on a schedule (run with the subscriber's permissions)
+CREATE TABLE IF NOT EXISTS filter_subscriptions (
+  id               SERIAL PRIMARY KEY,
+  filter_id        INT NOT NULL REFERENCES filters(id) ON DELETE CASCADE,
+  user_id          INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  frequency        TEXT NOT NULL CHECK (frequency IN ('daily','weekly')),
+  hour_utc         INT NOT NULL DEFAULT 8 CHECK (hour_utc BETWEEN 0 AND 23),
+  weekday          INT CHECK (weekday BETWEEN 0 AND 6),
+  email_when_empty BOOLEAN NOT NULL DEFAULT false,
+  next_run_at      TIMESTAMPTZ NOT NULL,
+  last_run_at      TIMESTAMPTZ,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (filter_id, user_id)
+);
+
+-- Scheduled automation rules ({"type":"scheduled","every":"hour|day|week"}) remember when they run next
+ALTER TABLE automation_rules ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS recent_views (
   user_id      INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   entity_type  TEXT NOT NULL,

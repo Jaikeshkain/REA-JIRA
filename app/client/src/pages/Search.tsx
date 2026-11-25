@@ -4,6 +4,7 @@ import { api, ApiError, type ColumnDef, type Issue, type SavedFilter } from '../
 import { BulkBar, loadColumns, saveColumns } from '../BulkBar';
 import { PageHeader, useShell } from '../Layout';
 import { DetailsDialog, shareLabel } from '../ShareDialog';
+import { SubscribeDialog } from './Email';
 import { Avatar, Popover, PriorityIcon, StatusLozenge, TypeIcon, fmtDate, timeAgo, useAsync } from '../ui';
 
 const EXAMPLES = [
@@ -25,7 +26,7 @@ export function Search() {
   const [filter, setFilter] = useState<SavedFilter | null>(null);
   const jql = params.get('jql') ?? filter?.jql ?? 'ORDER BY updated DESC';
   const [draft, setDraft] = useState(jql);
-  const [dialog, setDialog] = useState<'save' | 'details' | null>(null);
+  const [dialog, setDialog] = useState<'save' | 'details' | 'subscribe' | null>(null);
   const [catalog, setCatalog] = useState<{ defaults: string[]; columns: ColumnDef[] } | null>(null);
   const [columns, setColumns] = useState<string[]>(() => loadColumns(['key', 'summary', 'status', 'assignee', 'priority', 'project', 'updated']));
   const [picker, setPicker] = useState(false);
@@ -69,6 +70,7 @@ export function Search() {
               </button>
             )}
             {filter?.editable && <button className="btn subtle" onClick={() => setDialog('details')}>Details</button>}
+            {filter && <button className="btn subtle" onClick={() => setDialog('subscribe')} title="Get this filter's results by email">Subscribe</button>}
             <button className="btn subtle" onClick={() => api.exportCsv(jql, columns).then(
               (r) => toast(r.exported < r.total ? `Exported the first ${r.exported} of ${r.total}` : `Exported ${r.exported} work item${r.exported === 1 ? '' : 's'}`),
               (e) => toast(e instanceof ApiError ? e.message : String(e)),
@@ -155,6 +157,7 @@ export function Search() {
             nav(`/issues?filter=${f.id}`);
           }} />
       )}
+      {dialog === 'subscribe' && filter && <SubscribeDialog filter={filter} onClose={() => setDialog(null)} />}
       {dialog === 'details' && filter && (
         <DetailsDialog title="Filter details" submit="Save" initial={filter}
           onClose={() => setDialog(null)}

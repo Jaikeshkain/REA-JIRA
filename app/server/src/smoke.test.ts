@@ -13,6 +13,7 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cleanFilename } from './attachments.js';
+import { tick } from './scheduler.js';
 
 let passed = 0;
 const test = async (name: string, fn: () => Promise<void> | void) => {
@@ -813,6 +814,133 @@ try {
       assert.ok(await until(() => changes(vic).length > n1));
     }
     vic.close(); dana.close(); out.close();
+  });
+
+  await test('email: preferences, batching, read/off/digest rules, escaping, outbox', async () => {
+    assert.equal((await call(dev, 'GET', '/myself/preferences')).body.emailNotifications, 'immediate');
+    assert.equal((await call(dev, 'PUT', '/myself/preferences', { emailNotifications: 'sometimes' })).status, 400);
+    const emails = async (to: string) => db.query(`SELECT * FROM emails WHERE to_email = $1 ORDER BY id`, [to]);
+    const later = (min: number) => new Date(Date.now() + min * 60_000);
+    // flush whatever earlier tests queued, so counts below are about this test
+    await tick(db, later(2));
+    const danaBefore = (await emails('dev@tracker.test')).length;
+
+    // assignment → one immediate email to Dana, after the 1-minute batch window; summary is HTML-escaped
+    const k = (await call(admin, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'Fix <script>alert(1)</script> in footer', assignee: { accountId: '2' } } })).body.key;
+    await tick(db, new Date());
+    assert.equal((await emails('dev@tracker.test')).length, danaBefore, 'not before the batch window');
+    await tick(db, later(2));
+    const mine = (await emails('dev@tracker.test')).slice(danaBefore);
+    assert.equal(mine.length, 1);
+    assert.equal(mine[0].kind, 'notification');
+    assert.equal(mine[0].status, 'outbox', 'no SMTP configured → kept in the outbox');
+    assert.ok(mine[0].subject.includes(`assigned ${k} to you`), mine[0].subject);
+    assert.ok(mine[0].html_body.includes('Fix &lt;script&gt;alert(1)&lt;/script&gt;'));
+    assert.ok(!mine[0].html_body.includes('<script>'));
+    assert.ok(mine[0].text_body.includes(`/browse/${k}`));
+    await tick(db, later(3));
+    assert.equal((await emails('dev@tracker.test')).length, danaBefore + 1, 'never emailed twice');
+
+    // read in the app first → no email; "off" → no email
+    await call(admin, 'POST', `/issue/${k}/watchers`, { accountId: '3' });
+    await call(dev, 'POST', `/issue/${k}/comment`, { body: 'on it' });
+    await call(viewer, 'POST', '/notifications/read', { all: true });
+    await call(admin, 'PUT', '/myself/preferences', { emailNotifications: 'off' });
+    await call(dev, 'POST', `/issue/${k}/comment`, { body: 'still on it' });
+    const vicBefore = (await emails('viewer@tracker.test')).length;
+    const alexBefore = (await emails('admin@tracker.test')).length;
+    await tick(db, later(4));
+    assert.equal((await emails('viewer@tracker.test')).length, vicBefore + 1, 'only the unread second comment');
+    assert.equal((await emails('admin@tracker.test')).length, alexBefore, 'email off');
+    await call(admin, 'PUT', '/myself/preferences', { emailNotifications: 'immediate' });
+
+    // digest: waits for the digest hour, then one email for everything, once a day
+    await call(viewer, 'PUT', '/myself/preferences', { emailNotifications: 'digest' });
+    await call(dev, 'POST', `/issue/${k}/comment`, { body: 'digest me 1' });
+    await call(dev, 'POST', `/issue/${k}/comment`, { body: 'digest me 2' });
+    const v0 = (await emails('viewer@tracker.test')).length;
+    const notDigestHour = later(5);
+    if (notDigestHour.getUTCHours() === 8) notDigestHour.setUTCHours(9);
+    await tick(db, notDigestHour);
+    assert.equal((await emails('viewer@tracker.test')).length, v0, 'digest waits for its hour');
+    const digestTime = new Date(Date.now() + 86400_000);
+    digestTime.setUTCHours(8, 5, 0, 0);
+    await tick(db, digestTime);
+    const vic = (await emails('viewer@tracker.test')).slice(v0);
+    assert.equal(vic.length, 1);
+    assert.equal(vic[0].kind, 'digest');
+    assert.match(vic[0].subject, /Your Tracker digest: 2 updates/);
+    await call(dev, 'POST', `/issue/${k}/comment`, { body: 'digest me 3' });
+    await tick(db, new Date(digestTime.getTime() + 10 * 60_000));
+    assert.equal((await emails('viewer@tracker.test')).length, v0 + 1, 'one digest a day');
+    await call(viewer, 'PUT', '/myself/preferences', { emailNotifications: 'immediate' });
+    await call(viewer, 'POST', '/notifications/read', { all: true });
+
+    // admin outbox
+    assert.equal((await call(dev, 'GET', '/admin/emails')).status, 403);
+    assert.equal((await call(dev, 'POST', '/admin/scheduler/run')).status, 403);
+    const box = (await call(admin, 'GET', '/admin/emails')).body;
+    assert.equal(box.mode, 'outbox');
+    assert.ok(box.emails.some((e: any) => e.kind === 'digest'));
+    assert.equal((await call(admin, 'POST', '/admin/scheduler/run')).status, 200);
+  });
+
+  await test('filter subscriptions + scheduled automation rules', async () => {
+    const count = async (to: string) =>
+      (await db.query(`SELECT count(*)::int AS n FROM emails WHERE to_email = $1 AND kind = 'subscription'`, [to]))[0].n;
+    const filters = (await call(dev, 'GET', '/filter/search')).body.values;
+    const open = filters.find((f: any) => f.name === 'DEMO open work');
+    assert.equal((await call(dev, 'POST', `/filter/${open.id}/subscriptions`, { frequency: 'monthly' })).status, 400);
+    const sub = await call(dev, 'POST', `/filter/${open.id}/subscriptions`, { frequency: 'weekly', weekday: 3, hourUtc: 6 });
+    assert.equal(sub.status, 201);
+    const next = new Date(sub.body.nextRun);
+    assert.equal(next.getUTCDay(), 3);
+    assert.equal(next.getUTCHours(), 6);
+    assert.equal((await call(dev, 'GET', `/filter/${open.id}/subscriptions`)).body.length, 1);
+    const before = await count('dev@tracker.test');
+    await tick(db, new Date(next.getTime() - 60_000));
+    assert.equal(await count('dev@tracker.test'), before, 'not before it is due');
+    await tick(db, new Date(next.getTime() + 1000));
+    assert.equal(await count('dev@tracker.test'), before + 1);
+    const [mail] = await db.query(`SELECT * FROM emails WHERE to_email = 'dev@tracker.test' AND kind = 'subscription' ORDER BY id DESC LIMIT 1`);
+    assert.match(mail.subject, /^DEMO open work: \d+ work items?$/);
+    assert.match(mail.text_body, /Open the filter: .*\/issues\?filter=/);
+    const after = (await call(dev, 'GET', `/filter/${open.id}/subscriptions`)).body[0];
+    assert.equal(new Date(after.nextRun).getTime() - next.getTime(), 7 * 86400_000, 'advanced one week');
+
+    // someone with no DEMO access gets nothing unless "send when empty" (if they can see the filter at all)
+    const out = (await call(null, 'POST', '/auth/login', { email: 'out2@tracker.test', password: 'longenough1' })).body.token;
+    const os = await call(out, 'POST', `/filter/${open.id}/subscriptions`, { frequency: 'daily', hourUtc: 6 });
+    if (os.status === 201) {
+      await tick(db, new Date(new Date(os.body.nextRun).getTime() + 1000));
+      assert.equal(await count('out2@tracker.test'), 0, 'permission-scoped: no rows → no email');
+      assert.equal((await call(dev, 'DELETE', `/subscription/${os.body.id}`)).status, 404, 'only your own subscriptions');
+    } else {
+      assert.equal(os.status, 404);
+    }
+    assert.equal((await call(dev, 'DELETE', `/subscription/${sub.body.id}`)).status, 204);
+    assert.equal((await call(dev, 'GET', `/filter/${open.id}/subscriptions`)).body.length, 0);
+
+    // scheduled rule: needs a JQL; runs for matching work as Automation; next run advances
+    assert.equal((await call(admin, 'POST', '/project/DEMO/automation', { name: 'x', trigger: { type: 'scheduled', every: 'day' }, actions: [{ type: 'add_label', label: 'a' }] })).status, 400);
+    await call(dev, 'PATCH', '/issue/DEMO-11/fields/labels', { operation: 'ADD', value: ['stale-check'] });
+    const rule = (await call(admin, 'POST', '/project/DEMO/automation', {
+      name: 'Daily stale sweep', trigger: { type: 'scheduled', every: 'day', hourUtc: 7 }, condition: 'labels = stale-check',
+      actions: [{ type: 'add_label', label: 'reviewed' }],
+    })).body;
+    assert.ok(rule.nextRun, JSON.stringify(rule));
+    const due = new Date(rule.nextRun);
+    assert.equal(due.getUTCHours(), 7);
+    await tick(db, new Date(due.getTime() - 60_000));
+    assert.ok(!(await call(dev, 'GET', '/issue/DEMO-11')).body.fields.labels.includes('reviewed'), 'not before it is due');
+    await tick(db, new Date(due.getTime() + 1000));
+    const i = (await call(dev, 'GET', '/issue/DEMO-11?expand=changelog')).body;
+    assert.ok(i.fields.labels.includes('reviewed'));
+    const runs = (await call(admin, 'GET', `/automation/${rule.id}/runs`)).body;
+    assert.equal(runs[0].status, 'success', JSON.stringify(runs[0]));
+    const again = (await call(admin, 'GET', '/project/DEMO/automation')).body.find((r: any) => r.id === rule.id);
+    assert.equal(new Date(again.nextRun).getTime() - due.getTime(), 86400_000, 'next run tomorrow');
+    await call(admin, 'DELETE', `/automation/${rule.id}`);
   });
 
   await test('recently viewed list', async () => {
