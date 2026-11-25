@@ -91,6 +91,10 @@ site admins, one DB-driven background scheduler.
 Blocks links drawn as Timeline arrows with conflict flags, drag-to-link and click-to-remove; custom-field columns
 in the space List view.
 
+## Phase 4 — part 6 done: single sign-on
+OIDC (code + PKCE) with full ID-token checks, verified-email account linking, JIT accounts, domain allow-list,
+SSO-only mode with admin break-glass, mock provider for development and tests.
+
 ## Phase 4 — remaining candidates
-SSO, multi-instance real-time
+Multi-instance real-time
 and scheduler (Postgres LISTEN/NOTIFY + advisory lock).

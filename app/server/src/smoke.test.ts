@@ -14,6 +14,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cleanFilename } from './attachments.js';
 import { tick } from './scheduler.js';
+import { startMockIdp } from './dev-idp.js';
+import type { OidcConfig } from './oidc.js';
 
 let passed = 0;
 const test = async (name: string, fn: () => Promise<void> | void) => {
@@ -960,6 +962,120 @@ try {
     const id = now.find((d: any) => d.blocker === 'DEMO-2').id;
     assert.equal((await call(dev, 'DELETE', `/issueLink/${id}`)).status, 204);
     assert.ok(!(await deps(dev)).body.dependencies.some((d: any) => d.id === id));
+  });
+
+  await test('sso: OIDC sign-in, linking, provisioning, one-time codes, SSO-only mode', async () => {
+    assert.deepEqual((await call(null, 'GET', '/auth/oidc/config')).body, { enabled: false, name: null, passwordLogin: 'all' });
+    assert.equal((await call(null, 'GET', '/auth/oidc/start')).status, 404, 'not configured → no SSO');
+
+    const idp = await startMockIdp();
+    const cfg: OidcConfig = { issuer: idp.issuer, clientId: idp.clientId, clientSecret: idp.clientSecret, name: 'Acme SSO', redirectUri: '', allowedDomains: [], autoCreate: true, appUrl: 'http://app.test' };
+    const app2 = buildApp(db, { attachmentsDir: attachDir, oidc: cfg });
+    const srv2 = app2.listen(0);
+    const base2 = `http://127.0.0.1:${(srv2.address() as AddressInfo).port}/api`;
+    cfg.redirectUri = `${base2}/auth/oidc/callback`;
+    const loc = async (url: string) => {
+      const r = await fetch(url, { redirect: 'manual' });
+      assert.equal(r.status, 302, `${url} → ${r.status}`);
+      return r.headers.get('location')!;
+    };
+    /** Full browser-less round trip; returns the fragment params the app would receive. */
+    const sso = async (email: string, next = '/issues') => {
+      const auth = new URL(await loc(`${base2}/auth/oidc/start?next=${encodeURIComponent(next)}`));
+      assert.equal(auth.searchParams.get('code_challenge_method'), 'S256');
+      assert.ok(auth.searchParams.get('state') && auth.searchParams.get('nonce'));
+      auth.searchParams.set('login_hint', email);
+      const cb = await loc(auth.toString());
+      const back = await loc(cb);
+      assert.ok(back.startsWith('http://app.test/#'), back);
+      const p = new URLSearchParams(back.split('#')[1]);
+      return { code: p.get('sso'), error: p.get('sso_error'), cb };
+    };
+    const exchange = async (code: string | null) => {
+      const r = await fetch(`${base2}/auth/oidc/exchange`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) });
+      return { status: r.status, body: await r.json() };
+    };
+    try {
+      assert.deepEqual(await (await fetch(`${base2}/auth/oidc/config`)).json(), { enabled: true, name: 'Acme SSO', passwordLogin: 'all' });
+
+      // existing account (verified email) → linked, normal session
+      const d = await sso('dev@tracker.test', '/issues?filter=1');
+      assert.ok(d.code && !d.error, d.error ?? '');
+      const ex = await exchange(d.code);
+      assert.equal(ex.status, 200);
+      assert.equal(ex.body.user.displayName, 'Dana Dev');
+      assert.equal(ex.body.next, '/issues?filter=1');
+      assert.equal((await call(ex.body.token, 'GET', '/myself')).body.displayName, 'Dana Dev');
+      assert.equal((await exchange(d.code)).status, 401, 'hand-off code works once');
+      assert.equal((await db.query(`SELECT count(*)::int AS n FROM user_identities WHERE user_id = 2`))[0].n, 1);
+      assert.equal((await exchange((await sso('dev@tracker.test')).code)).body.user.accountId, '2', 'same subject → same account');
+
+      // replaying the provider's callback (state is one-time) fails
+      assert.match((await loc(d.cb)), /sso_error=/);
+      // open redirects are refused
+      assert.equal((await exchange((await sso('dev@tracker.test', '//evil.example/x')).code)).body.next, '/');
+
+      // new person → account created just in time, never a site admin, no password sign-in
+      const n = await exchange((await sso('new.person@tracker.test')).code);
+      assert.equal(n.status, 200);
+      assert.equal(n.body.user.displayName, 'Nia Newcomer');
+      assert.equal(n.body.user.isSiteAdmin, false);
+      for (const pw of ['!sso', '', 'anything']) {
+        assert.equal((await call(null, 'POST', '/auth/login', { email: 'new.person@tracker.test', password: pw || 'x' })).status, 401);
+      }
+
+      // unverified email: not provisioned, and never linked to an existing account (no takeover)
+      assert.match((await sso('unverified@tracker.test')).error ?? '', /verified/);
+      await call(null, 'POST', '/auth/register', { email: 'unverified@tracker.test', displayName: 'Real Owner', password: 'longenough1' });
+      assert.match((await sso('unverified@tracker.test')).error ?? '', /verified/);
+      assert.equal((await db.query(`SELECT count(*)::int AS n FROM user_identities WHERE email = 'unverified@tracker.test'`))[0].n, 0);
+
+      // forged or broken ID tokens are all rejected
+      const attacks: [string, any][] = [
+        ['alg none', () => ({ header: { alg: 'none' }, key: 'none' })],
+        ['HS256', ({ header }: any) => ({ header: { ...header, alg: 'HS256' } })],
+        ['signed with another key', () => ({ key: 'other' })],
+        ['wrong audience', ({ claims }: any) => ({ claims: { ...claims, aud: 'someone-else' } })],
+        ['extra audience without azp', ({ claims }: any) => ({ claims: { ...claims, aud: [claims.aud, 'other'] } })],
+        ['wrong issuer', ({ claims }: any) => ({ claims: { ...claims, iss: 'https://evil.example' } })],
+        ['expired', ({ claims }: any) => ({ claims: { ...claims, exp: Math.floor(Date.now() / 1000) - 3600 } })],
+        ['wrong nonce', ({ claims }: any) => ({ claims: { ...claims, nonce: 'replayed' } })],
+        ['tampered after signing', ({ claims }: any) => ({ claims: { ...claims, email: 'admin@tracker.test' }, key: 'other' })],
+      ];
+      for (const [name, f] of attacks) {
+        idp.tamper = f;
+        const r = await sso('dev@tracker.test');
+        assert.ok(!r.code && r.error, `${name} must be rejected`);
+      }
+      idp.tamper = null;
+
+      // deactivated account, domain allow-list, no auto-create
+      await db.query(`UPDATE users SET active = false WHERE email = 'new.person@tracker.test'`);
+      assert.match((await sso('new.person@tracker.test')).error ?? '', /deactivated/);
+      cfg.allowedDomains = ['example.com'];
+      assert.match((await sso('dev@tracker.test')).error ?? '', /can’t sign in here/);
+      cfg.allowedDomains = [];
+      await db.query(`DELETE FROM user_identities WHERE email = 'new.person@tracker.test'`);
+      await db.query(`DELETE FROM users WHERE email = 'new.person@tracker.test'`);
+      cfg.autoCreate = false;
+      assert.match((await sso('new.person@tracker.test')).error ?? '', /no account/);
+      cfg.autoCreate = true;
+
+      // SSO-only: password sign-in only for site admins (break-glass), sign-up closed
+      process.env.SSO_ONLY = '1';
+      try {
+        assert.equal((await call(null, 'POST', '/auth/login', { email: 'dev@tracker.test', password: DEMO_USERS[0].password })).status, 403);
+        assert.equal((await call(null, 'POST', '/auth/login', { email: 'admin@tracker.test', password: DEMO_USERS[0].password })).status, 200);
+        assert.equal((await call(null, 'POST', '/auth/register', { email: 'late@tracker.test', displayName: 'Late', password: 'longenough1' })).status, 403);
+        assert.equal((await call(null, 'GET', '/auth/oidc/config')).body.passwordLogin, 'admins');
+      } finally {
+        delete process.env.SSO_ONLY;
+      }
+    } finally {
+      (app2.locals.hub as { close(): void }).close();
+      srv2.close();
+      await idp.close();
+    }
   });
 
   await test('recently viewed list', async () => {

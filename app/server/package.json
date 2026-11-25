@@ -7,7 +7,9 @@
     "start": "tsx src/index.ts",
     "build": "tsc --noEmit",
     "seed": "tsx src/seed.ts",
-    "test": "tsx src/smoke.test.ts"
+    "test": "tsx src/smoke.test.ts",
+    "dev:idp": "tsx src/dev-idp.ts",
+    "dev:sso": "tsx watch --env-file=sso-dev.env src/index.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.3.0",

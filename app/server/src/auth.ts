@@ -4,6 +4,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { z } from 'zod';
 import type { Db } from './db.js';
 import { HttpError, h, bad } from './http.js';
+import { ssoOnly } from './oidc.js';
 
 export interface AuthUser {
   id: number;
@@ -111,6 +112,8 @@ export function authRoutes(db: Db) {
       if (!tenant) {
         [tenant] = await db.query(`INSERT INTO tenants (name) VALUES ($1) RETURNING id`, [body.siteName ?? 'My site']);
         isFirst = true;
+      } else if (ssoOnly()) {
+        throw new HttpError(403, 'This site uses single sign-on. Sign in with SSO instead.');
       }
       const exists = await db.query(`SELECT 1 FROM users WHERE tenant_id=$1 AND email=lower($2)`, [tenant.id, body.email]);
       if (exists.length) throw bad('An account with this email already exists');
@@ -125,9 +128,12 @@ export function authRoutes(db: Db) {
     h(async (req) => {
       const body = Login.parse(req.body);
       const [row] = await db.query(`SELECT * FROM users WHERE email = lower($1) AND active`, [body.email]);
-      if (!row || !(await bcrypt.compare(body.password, row.password_hash))) {
+      // SSO-only accounts have no bcrypt hash; treat them like a wrong password (no account enumeration)
+      const usable = row && typeof row.password_hash === 'string' && row.password_hash.startsWith('$2');
+      if (!usable || !(await bcrypt.compare(body.password, row.password_hash))) {
         throw new HttpError(401, 'Incorrect email or password');
       }
+      if (ssoOnly() && !row.is_site_admin) throw new HttpError(403, 'This site uses single sign-on. Sign in with SSO instead.');
       const token = await createSession(db, row.id);
       return { token, user: userJson(rowToUser(row)) };
     }),

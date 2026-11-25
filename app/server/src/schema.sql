@@ -392,3 +392,26 @@ CREATE TABLE IF NOT EXISTS recent_views (
   viewed_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, entity_type, entity_id)
 );
+
+-- ---------------------------------------------------------------- Phase 4: single sign-on (OIDC)
+CREATE TABLE IF NOT EXISTS user_identities (
+  issuer      TEXT NOT NULL,
+  subject     TEXT NOT NULL,
+  user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email       TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (issuer, subject)
+);
+CREATE TABLE IF NOT EXISTS oidc_logins (
+  state       TEXT PRIMARY KEY,
+  nonce       TEXT NOT NULL,
+  verifier    TEXT NOT NULL,
+  next        TEXT NOT NULL DEFAULT '/',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS sso_handoffs (
+  code_hash   TEXT PRIMARY KEY,
+  user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  next        TEXT NOT NULL DEFAULT '/',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

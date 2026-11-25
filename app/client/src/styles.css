@@ -529,3 +529,7 @@ code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
 .tl-dep-draft { fill: none; stroke: var(--brand); stroke-width: 2; stroke-dasharray: 5 4; pointer-events: none; }
 .tl-connector { position: absolute; right: -16px; top: 7px; width: 10px; height: 10px; border-radius: 50%; background: var(--surface); border: 2px solid var(--brand); cursor: crosshair; opacity: 0; touch-action: none; }
 .tl-bar:hover .tl-connector, .tl-connector:focus { opacity: 1; }
+
+/* ---------- login: SSO divider (Phase 4) ---------- */
+.auth-or { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 12px; }
+.auth-or::before, .auth-or::after { content: ''; flex: 1; border-top: 1px solid var(--border); }

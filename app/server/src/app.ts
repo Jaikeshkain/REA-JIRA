@@ -18,10 +18,11 @@ import { automationRoutes } from './automation.js';
 import { bulkRoutes } from './bulk.js';
 import { Hub, changeTracker, setHub } from './realtime.js';
 import { schedulerRoutes } from './scheduler.js';
+import { oidcConfigFromEnv, oidcRoutes, type OidcConfig } from './oidc.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-export function buildApp(db: Db, opts: { attachmentsDir?: string } = {}) {
+export function buildApp(db: Db, opts: { attachmentsDir?: string; oidc?: OidcConfig | null } = {}) {
   const store = new FileStore(opts.attachmentsDir ?? process.env.ATTACHMENTS_DIR ?? join(here, '..', 'data', 'attachments'));
   const app = express();
   app.disable('x-powered-by');
@@ -31,6 +32,7 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string } = {}) {
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
   });
+  app.use('/api/auth/oidc', oidcRoutes(db, opts.oidc === undefined ? oidcConfigFromEnv() : opts.oidc));
   app.use('/api/auth', authRoutes(db));
   // real-time: one SSE stream per tab; change events published after successful writes
   const hub = new Hub(db);

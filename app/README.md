@@ -27,7 +27,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (31 checks)
+npm test           # API smoke test on an in-memory database (32 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -113,6 +113,28 @@ npm run build      # type-check server + client, production-build client
 - API: `GET|POST /api/project/:key/fields`, `PUT|DELETE /api/field/:id`; `GET /api/project/:key/workflow`,
   `POST /api/project/:key/statuses`, `PUT|DELETE /api/status/:id[?moveTo=]`, `POST /api/project/:key/transitions`,
   `PUT|DELETE /api/transition/:id`; `customfield_<id>` keys on create and `PATCH /api/issue/:key/fields/customfield_<id>`.
+
+## Phase 4 (part 6): single sign-on (OpenID Connect)
+
+- **Continue with SSO** on the login page works with any OpenID Connect provider (Okta, Microsoft Entra ID, Google,
+  Keycloak, …). Configure the API with:
+
+  | Variable | |
+  |---|---|
+  | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | from your provider; register `<APP_URL>/api/auth/oidc/callback` as the redirect URI |
+  | `OIDC_NAME` | button label, e.g. `Acme SSO` |
+  | `OIDC_ALLOWED_DOMAINS` | optional, comma-separated email domains allowed to sign in with SSO |
+  | `OIDC_AUTO_CREATE=false` | only people who already have an account may sign in (default: accounts are created on first sign-in) |
+  | `SSO_ONLY=1` | password sign-in only for site admins (break-glass); sign-up is closed |
+
+- **Security:** authorization code flow with PKCE, one-time `state` and `nonce`. The ID token's signature (RS256/ES256,
+  provider JWKS with key rotation), issuer, audience/`azp`, expiry and nonce are all checked; `alg: none` and HMAC
+  tokens are refused. People are matched by (issuer, subject). A first SSO sign-in links to an existing account only
+  when the provider marks the email as **verified**, so an unverified address can't take over an account. New SSO
+  accounts are never site admins and have no password. The session reaches the browser through a one-time,
+  60-second code in the URL fragment (not a token in a URL), and deep links survive the round trip.
+- **Try it locally:** `npm run dev:sso` starts a **mock identity provider** on http://127.0.0.1:4100 next to the app.
+  It asks no password: you pick a test identity (including one with an unverified email). Development only.
 
 ## Phase 4 (part 5): timeline dependencies + list fields
 

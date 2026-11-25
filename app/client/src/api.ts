@@ -171,6 +171,8 @@ export const api = {
   register: (email: string, displayName: string, password: string) =>
     call<{ token: string; user: User }>('POST', '/auth/register', { email, displayName, password }),
   logout: () => call('POST', '/auth/logout'),
+  ssoConfig: () => call<{ enabled: boolean; name: string | null; passwordLogin: 'all' | 'admins' }>('GET', '/auth/oidc/config'),
+  ssoExchange: (code: string) => call<{ token: string; next: string; user: User }>('POST', '/auth/oidc/exchange', { code }),
   myself: () => call<User>('GET', '/myself'),
   projects: () => call<ProjectSummary[]>('GET', '/project'),
   createProject: (key: string, name: string, description?: string) => call<{ key: string }>('POST', '/project', { key, name, description }),
