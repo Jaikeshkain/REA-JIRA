@@ -1,0 +1,280 @@
+/**
+ * End-to-end API smoke test on an in-memory PGlite database.
+ * Run: npm test -w server
+ */
+import assert from 'node:assert/strict';
+import type { AddressInfo } from 'node:net';
+import { openDb } from './db.js';
+import { buildApp } from './app.js';
+import { seed, DEMO_USERS } from './seed.js';
+import { rankBetween, initialRanks } from './lexorank.js';
+import { parse } from './jql.js';
+
+let passed = 0;
+const test = async (name: string, fn: () => Promise<void> | void) => {
+  try {
+    await fn();
+    passed++;
+    console.log(`  ✓ ${name}`);
+  } catch (e) {
+    console.error(`  ✗ ${name}`);
+    throw e;
+  }
+};
+
+console.log('unit');
+await test('lexorank orders strictly between neighbours', () => {
+  const r = initialRanks(5);
+  for (let i = 1; i < r.length; i++) assert.ok(r[i - 1] < r[i]);
+  for (const [a, b] of [[null, 'i'], ['a', 'b'], ['z', null], ['0i', '1'], ['a', 'a0i']] as const) {
+    const m = rankBetween(a, b);
+    if (a) assert.ok(a < m, `${a} < ${m}`);
+    if (b) assert.ok(m < b, `${m} < ${b}`);
+  }
+  let lo: string | null = null, hi: string | null = 'i';
+  for (let i = 0; i < 50; i++) { hi = rankBetween(lo, hi); } // repeated insert-at-top stays valid
+  assert.ok(hi! < 'i');
+});
+await test('jql parses precedence and ORDER BY', () => {
+  const q = parse('project = DEMO AND (status = "To Do" OR assignee = currentUser()) ORDER BY priority DESC, created');
+  assert.equal(q.where?.t, 'and');
+  assert.deepEqual(q.orderBy, [{ field: 'priority', dir: 'DESC' }, { field: 'created', dir: 'ASC' }]);
+  assert.throws(() => parse('project = '), /expected a value/);
+});
+
+console.log('api');
+const db = await openDb({ dataDir: 'memory://' });
+await seed(db);
+const server = buildApp(db).listen(0);
+const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
+
+const call = async (token: string | null, method: string, path: string, body?: unknown) => {
+  const res = await fetch(base + path, {
+    method,
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await res.text();
+  return { status: res.status, body: text ? JSON.parse(text) : null };
+};
+const login = async (email: string) => (await call(null, 'POST', '/auth/login', { email, password: DEMO_USERS[0].password })).body.token as string;
+
+try {
+  const admin = await login('admin@tracker.test');
+  const dev = await login('dev@tracker.test');
+  const viewer = await login('viewer@tracker.test');
+
+  await test('auth: rejects bad password and missing token', async () => {
+    assert.equal((await call(null, 'POST', '/auth/login', { email: 'admin@tracker.test', password: 'nope' })).status, 401);
+    assert.equal((await call(null, 'GET', '/myself')).status, 401);
+    assert.equal((await call(admin, 'GET', '/myself')).body.displayName, 'Alex Admin');
+  });
+
+  let key = '';
+  await test('create issue returns 201 + key, sets reporter and watcher', async () => {
+    const r = await call(dev, 'POST', '/issue', {
+      fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'Smoke test task', description: 'First line\n\n- a\n- b', labels: ['qa'] },
+    });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.match(r.body.key, /^DEMO-13$/);
+    key = r.body.key;
+    const i = (await call(dev, 'GET', `/issue/${key}?expand=transitions,changelog`)).body;
+    assert.equal(i.fields.reporter.displayName, 'Dana Dev');
+    assert.equal(i.fields.status.name, 'To Do');
+    assert.equal(i.fields.watches.isWatching, true);
+    assert.equal(i.fields.description.content[1].type, 'bulletList');
+    assert.equal(i.transitions.length, 4);
+  });
+
+  await test('subtask requires parent; hierarchy is enforced', async () => {
+    const r1 = await call(dev, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Subtask' }, summary: 'x' } });
+    assert.equal(r1.status, 400);
+    const r2 = await call(dev, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Subtask' }, summary: 'child', parent: { key } } });
+    assert.equal(r2.status, 201);
+    const r3 = await call(dev, 'PATCH', `/issue/${key}/fields/parent`, { value: 'DEMO-7' }); // Task under Task → invalid
+    assert.equal(r3.status, 400);
+    const r4 = await call(dev, 'PATCH', `/issue/${key}/fields/parent`, { value: 'DEMO-1' }); // Task under Epic → ok
+    assert.equal(r4.body.fields.parent.key, 'DEMO-1');
+  });
+
+  await test('per-field edits write the changelog', async () => {
+    await call(dev, 'PATCH', `/issue/${key}/fields/summary`, { value: 'Renamed task' });
+    await call(dev, 'PATCH', `/issue/${key}/fields/assignee`, { value: { accountId: '2' } });
+    await call(dev, 'PATCH', `/issue/${key}/fields/labels`, { operation: 'ADD', value: ['smoke'] });
+    await call(dev, 'PATCH', `/issue/${key}/fields/labels`, { operation: 'REMOVE', value: ['qa'] });
+    const r = await call(dev, 'PATCH', `/issue/${key}/fields/priority`, { value: 'High' });
+    assert.equal(r.body.fields.summary, 'Renamed task');
+    assert.deepEqual(r.body.fields.labels, ['smoke']);
+    assert.equal(r.body.fields.priority.name, 'High');
+    const log = (await call(dev, 'GET', `/issue/${key}?expand=changelog`)).body.changelog.map((c: any) => c.items[0].field);
+    for (const f of ['summary', 'assignee', 'labels', 'priority', 'parent', 'created']) assert.ok(log.includes(f), `changelog has ${f}`);
+    assert.equal((await call(dev, 'PATCH', `/issue/${key}/fields/status`, { value: 'Done' })).status, 400);
+  });
+
+  await test('transition to Done sets resolution; back to To Do clears it', async () => {
+    const tr = (await call(dev, 'GET', `/issue/${key}/transitions`)).body.transitions;
+    const done = tr.find((t: any) => t.to.name === 'Done');
+    const r = await call(dev, 'POST', `/issue/${key}/transitions`, { transition: { id: done.id } });
+    assert.equal(r.body.fields.status.name, 'Done');
+    assert.equal(r.body.fields.resolution.name, 'Done');
+    const todo = tr.find((t: any) => t.to.name === 'To Do');
+    const r2 = await call(dev, 'POST', `/issue/${key}/transitions`, { transition: { id: todo.id } });
+    assert.equal(r2.body.fields.resolution, null);
+  });
+
+  await test('board drag: move to In Progress at top of column', async () => {
+    let board = (await call(dev, 'GET', '/project/DEMO/board')).body;
+    assert.equal(board.sprint.name, 'DEMO Sprint 1');
+    assert.ok(!board.columns.some((c: any) => c.issues.some((i: any) => i.key === key)), 'unplanned work is not on the sprint board');
+    // plan it into the active sprint, then it shows up
+    await call(dev, 'PATCH', `/issue/${key}/fields/sprint`, { value: board.sprint.id });
+    board = (await call(dev, 'GET', '/project/DEMO/board')).body;
+    const col = board.columns.find((c: any) => c.status.name === 'In Progress');
+    const first = col.issues[0]?.key ?? null;
+    const r = await call(dev, 'POST', `/issue/${key}/rank`, { statusId: col.status.id, prevKey: null, nextKey: first });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const after = (await call(dev, 'GET', '/project/DEMO/board')).body.columns.find((c: any) => c.status.name === 'In Progress');
+    assert.equal(after.issues[0].key, key);
+    assert.ok(!board.columns.some((c: any) => c.issues.some((i: any) => i.fields.issuetype.name === 'Epic')), 'epics not on board');
+  });
+
+  await test('comments: add, list, edit own; viewer cannot comment', async () => {
+    const c = await call(dev, 'POST', `/issue/${key}/comment`, { body: 'Looks good' });
+    assert.equal(c.status, 201);
+    const list = (await call(dev, 'GET', `/issue/${key}/comment`)).body;
+    assert.equal(list.total, 1);
+    assert.equal(list.comments[0].body.type, 'doc');
+    assert.equal((await call(dev, 'PUT', `/issue/${key}/comment/${c.body.id}`, { body: 'Edited' })).status, 200);
+    assert.equal((await call(viewer, 'POST', `/issue/${key}/comment`, { body: 'hi' })).status, 403);
+    assert.equal((await call(dev, 'POST', `/issue/${key}/comment`, { body: '   ' })).status, 400);
+  });
+
+  await test('permissions: viewer can browse but not edit/create; member cannot delete', async () => {
+    assert.equal((await call(viewer, 'GET', `/issue/${key}`)).status, 200);
+    assert.equal((await call(viewer, 'PATCH', `/issue/${key}/fields/summary`, { value: 'x' })).status, 403);
+    assert.equal((await call(viewer, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'x' } })).status, 403);
+    assert.equal((await call(dev, 'DELETE', `/issue/DEMO-9`)).status, 403);
+  });
+
+  await test('JQL search: filters, text, ordering, errors, access control', async () => {
+    const q = async (t: string, jql: string) => call(t, 'POST', '/search/jql', { jql, maxResults: 100 });
+    const all = (await q(admin, 'project = DEMO')).body;
+    assert.equal(all.total, 14);
+    const mine = (await q(dev, 'assignee = currentUser() ORDER BY priority DESC')).body;
+    assert.ok(mine.total >= 3);
+    assert.equal(mine.issues[0].fields.priority.name, 'Highest');
+    assert.equal((await q(admin, 'text ~ "wallet"')).body.total, 1);
+    assert.equal((await q(admin, 'labels in (security) AND type = Bug')).body.issues[0].key, 'DEMO-11');
+    assert.equal((await q(admin, 'statusCategory = Done AND resolution is not EMPTY')).body.total, 2);
+    assert.equal((await q(admin, 'assignee is EMPTY AND project = DEMO')).body.issues.every((i: any) => !i.fields.assignee), true);
+    assert.equal((await q(admin, 'created >= -1d')).body.total, 14);
+    assert.equal((await q(admin, 'nonsense = 1')).status, 400);
+    assert.equal((await q(admin, 'status = ')).status, 400);
+    // a user outside the project sees nothing
+    const reg = await call(null, 'POST', '/auth/register', { email: 'outsider@tracker.test', displayName: 'Out Sider', password: 'longenough1' });
+    assert.equal(reg.status, 201);
+    assert.equal((await q(reg.body.token, 'project = DEMO')).body.total, 0);
+    assert.equal((await call(reg.body.token, 'GET', `/issue/${key}`)).status, 404);
+  });
+
+  await test('summary aggregates and activity stream', async () => {
+    const agg = (await call(admin, 'GET', '/project/DEMO/aggregate?by=status')).body;
+    assert.equal(agg.groups.reduce((n: number, g: any) => n + g.count, 0), 14);
+    const act = (await call(admin, 'GET', '/project/DEMO/activity')).body;
+    assert.ok(act.some((a: any) => a.kind === 'comment'));
+    assert.ok(act.some((a: any) => a.field === 'status'));
+  });
+
+  await test('projects: create with defaults; duplicate key rejected; delete issue (admin)', async () => {
+    const p = await call(dev, 'POST', '/project', { key: 'ops', name: 'Operations' });
+    assert.equal(p.status, 201);
+    assert.equal(p.body.key, 'OPS');
+    const detail = (await call(dev, 'GET', '/project/OPS')).body;
+    assert.equal(detail.statuses.length, 4);
+    assert.equal(detail.myRole, 'admin');
+    assert.equal((await call(dev, 'POST', '/project', { key: 'OPS', name: 'Dup' })).status, 400);
+    const d = await call(admin, 'DELETE', `/issue/${key}`);
+    assert.equal(d.status, 400); // has a subtask
+    assert.equal((await call(admin, 'DELETE', `/issue/${key}?deleteSubtasks=true`)).status, 204);
+    assert.equal((await call(admin, 'GET', `/issue/${key}`)).status, 404);
+  });
+
+  await test('sprints: backlog, plan, JQL, start rules, estimate change', async () => {
+    const bl = (await call(dev, 'GET', '/project/DEMO/backlog')).body;
+    assert.deepEqual(bl.sprints.map((s: any) => [s.sprint.name, s.sprint.state]), [['DEMO Sprint 1', 'active'], ['DEMO Sprint 2', 'future']]);
+    assert.equal(bl.sprints[0].points.total, 3 + 8 + 3 + 5 + 1);
+    assert.ok(bl.backlog.issues.some((i: any) => i.key === 'DEMO-9'));
+    assert.ok(!bl.backlog.issues.some((i: any) => i.fields.issuetype.name === 'Epic'), 'epics not in backlog list');
+    const s2 = bl.sprints[1].sprint.id;
+    // drag DEMO-9 from backlog into Sprint 2, above DEMO-8
+    const r = await call(dev, 'POST', '/issue/DEMO-9/rank', { sprintId: s2, prevKey: null, nextKey: 'DEMO-8' });
+    assert.equal(r.body.fields.sprint.name, 'DEMO Sprint 2');
+    const bl2 = (await call(dev, 'GET', '/project/DEMO/backlog')).body;
+    assert.deepEqual(bl2.sprints[1].issues.map((i: any) => i.key), ['DEMO-9', 'DEMO-8']);
+    // JQL
+    const q = async (jql: string) => (await call(admin, 'POST', '/search/jql', { jql })).body;
+    assert.equal((await q('sprint in openSprints()')).total, 5); // seeded 5 (the smoke task was deleted earlier)
+    assert.equal((await q('sprint not in openSprints() AND sprint is not EMPTY')).total, 2);
+    assert.equal((await q('sprint in futureSprints()')).total, 2);
+    assert.equal((await q('sprint = "DEMO Sprint 2"')).total, 2);
+    assert.ok((await q('sprint is EMPTY AND project = DEMO')).total > 0);
+    // a second sprint cannot start while one is active
+    assert.equal((await call(dev, 'POST', `/sprint/${s2}/start`, {})).status, 400);
+    // viewer cannot manage sprints
+    assert.equal((await call(viewer, 'POST', '/project/DEMO/sprints', {})).status, 403);
+    // epics cannot be planned
+    assert.equal((await call(dev, 'PATCH', '/issue/DEMO-1/fields/sprint', { value: s2 })).status, 400);
+  });
+
+  await test('sprints: complete moves open work to next sprint; report + burndown', async () => {
+    const active = (await call(dev, 'GET', '/project/DEMO/sprints?state=active')).body[0];
+    const future = (await call(dev, 'GET', '/project/DEMO/sprints?state=future')).body[0];
+    // add scope mid-sprint and re-estimate
+    await call(dev, 'PATCH', '/issue/DEMO-9/fields/sprint', { value: active.id });
+    await call(dev, 'PATCH', '/issue/DEMO-9/fields/storypoints', { value: 4 });
+    // finish DEMO-7
+    const tr = (await call(dev, 'GET', '/issue/DEMO-7/transitions')).body.transitions.find((t: any) => t.to.name === 'Done');
+    await call(dev, 'POST', '/issue/DEMO-7/transitions', { transition: { id: tr.id } });
+
+    const before = (await call(dev, 'GET', `/sprint/${active.id}/report`)).body;
+    assert.equal(before.summary.committedPoints, 20);
+    assert.equal(before.summary.addedCount, 1);
+    assert.ok(before.burndown.length >= 14);
+    assert.equal(before.burndown[0].remainingPoints, 20);
+    assert.ok(before.burndown.some((d: any) => d.remainingPoints === 19), 'DEMO-12 (1pt) done on day 2');
+
+    const done = await call(dev, 'POST', `/sprint/${active.id}/complete`, { moveTo: future.id });
+    assert.equal(done.status, 200, JSON.stringify(done.body));
+    assert.deepEqual(done.body.completed.sort(), ['DEMO-12', 'DEMO-7']);
+    assert.ok(done.body.movedOpen.includes('DEMO-6'));
+    assert.equal(done.body.movedTo.name, 'DEMO Sprint 2');
+
+    const report = (await call(dev, 'GET', `/sprint/${active.id}/report`)).body;
+    assert.equal(report.sprint.state, 'closed');
+    assert.equal(report.summary.completedPoints, 9);
+    assert.ok(report.notCompleted.some((i: any) => i.key === 'DEMO-6'));
+    const board = (await call(dev, 'GET', '/project/DEMO/board')).body;
+    assert.equal(board.sprint, null, 'no active sprint after completion');
+    assert.equal(board.columns.reduce((n: number, c: any) => n + c.issues.length, 0), 0);
+    // start Sprint 2 → carried-over work is committed scope
+    const st = await call(dev, 'POST', `/sprint/${future.id}/start`, { endDate: new Date(Date.now() + 7 * 86400_000).toISOString() });
+    assert.equal(st.body.state, 'active');
+    const r2 = (await call(dev, 'GET', `/sprint/${future.id}/report`)).body;
+    assert.ok(r2.summary.committedCount >= 4);
+    assert.equal((await call(dev, 'GET', '/project/DEMO/velocity')).body[0].completed, 9);
+    // closed sprint: done work cannot be moved out
+    assert.equal((await call(dev, 'PATCH', '/issue/DEMO-7/fields/sprint', { value: null })).status, 400);
+    assert.equal((await call(dev, 'DELETE', `/sprint/${future.id}`)).status, 400); // active sprint can't be deleted
+  });
+
+  await test('recently viewed list', async () => {
+    await call(admin, 'GET', '/issue/DEMO-2');
+    const r = (await call(admin, 'GET', '/recent')).body;
+    assert.equal(r.issues[0].key, 'DEMO-2');
+  });
+
+  console.log(`\n${passed} passed`);
+} finally {
+  server.close();
+  await db.close();
+}

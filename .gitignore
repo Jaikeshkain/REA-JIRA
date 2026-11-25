@@ -1,0 +1,10 @@
+# dependencies / build output
+node_modules/
+dist/
+*.log
+
+# local dev database (PGlite) — reseeds on start
+app/server/data/
+
+# REA capture bundles: large (12 MB) and contain data from the live Jira site (account IDs, emails)
+evidence/
