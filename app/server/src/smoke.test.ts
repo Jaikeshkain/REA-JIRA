@@ -50,7 +50,8 @@ console.log('api');
 const db = await openDb({ dataDir: 'memory://' });
 await seed(db);
 const attachDir = await mkdtemp(join(tmpdir(), 'tracker-attach-'));
-const server = buildApp(db, { attachmentsDir: attachDir }).listen(0);
+const app = buildApp(db, { attachmentsDir: attachDir });
+const server = app.listen(0);
 const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
 
 const call = async (token: string | null, method: string, path: string, body?: unknown) => {
@@ -739,6 +740,81 @@ try {
     assert.equal(noSummary.status, 400);
   });
 
+  await test('real-time: scoped change events after commit, notification pings, auth', async () => {
+    /** Minimal SSE client over fetch (same approach as the browser client). */
+    const stream = async (token: string | null) => {
+      const ctl = new AbortController();
+      const events: { event: string; data: any }[] = [];
+      const res = await fetch(`${base}/events`, { headers: token ? { authorization: `Bearer ${token}` } : {}, signal: ctl.signal });
+      if (res.status !== 200) return { status: res.status, events, close: () => ctl.abort() };
+      const reader = res.body!.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      (async () => {
+        try {
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let i;
+            while ((i = buf.indexOf('\n\n')) >= 0) {
+              const block = buf.slice(0, i); buf = buf.slice(i + 2);
+              const ev = /^event: (.*)$/m.exec(block)?.[1];
+              const data = /^data: (.*)$/m.exec(block)?.[1];
+              if (ev) events.push({ event: ev, data: data ? JSON.parse(data) : null });
+            }
+          }
+        } catch { /* aborted */ }
+      })();
+      return { status: 200, events, close: () => ctl.abort() };
+    };
+    const until = async (cond: () => boolean, ms = 2000) => {
+      const t0 = Date.now();
+      while (!cond() && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 25));
+      return cond();
+    };
+    assert.equal((await stream(null)).status, 401);
+    const vic = await stream(viewer);
+    const dana = await stream(dev);
+    const out = await stream((await call(null, 'POST', '/auth/login', { email: 'out2@tracker.test', password: 'longenough1' })).body.token);
+    assert.ok(await until(() => vic.events.some((e) => e.event === 'hello') && out.events.some((e) => e.event === 'hello')));
+    const changes = (s: typeof vic) => s.events.filter((e) => e.event === 'change');
+
+    // a member's edit reaches the viewer (same space) but not the outsider
+    await call(dev, 'PATCH', '/issue/DEMO-7/fields/summary', { value: 'Create Wallet Integration (live)' });
+    assert.ok(await until(() => changes(vic).length > 0), 'viewer got a change event');
+    assert.deepEqual(changes(vic)[0].data, { type: 'change', projectKey: 'DEMO', keys: ['DEMO-7'], actor: '2', scope: 'issue' });
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(changes(out).length, 0, 'outsider gets nothing');
+
+    // a failed write publishes nothing
+    const before = changes(dana).length;
+    assert.equal((await call(viewer, 'PATCH', '/issue/DEMO-7/fields/summary', { value: 'nope' })).status, 403);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(changes(dana).length, before);
+
+    // create announces the space; delete announces the deleted key
+    const k = (await call(admin, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'Live one', assignee: { accountId: '2' } } })).body.key;
+    assert.ok(await until(() => changes(vic).some((e) => e.data.scope === 'space')));
+    // the assignment notification pings Dana only
+    assert.ok(await until(() => dana.events.some((e) => e.event === 'notification')), 'assignee pinged');
+    assert.ok(!vic.events.some((e) => e.event === 'notification'));
+    await call(admin, 'DELETE', `/issue/${k}`);
+    assert.ok(await until(() => changes(vic).some((e) => e.data.keys.includes(k))), 'delete announced with its key');
+
+    // bulk + sprint (id-based) routes resolve their space too
+    const n0 = changes(vic).length;
+    await call(dev, 'POST', '/bulk', { keys: ['DEMO-7', 'DEMO-8'], action: { type: 'edit', field: 'labels', operation: 'ADD', value: ['live'] } });
+    assert.ok(await until(() => changes(vic).slice(n0).some((e) => e.data.keys.includes('DEMO-7') && e.data.keys.includes('DEMO-8'))));
+    const sprint = (await call(dev, 'GET', '/project/DEMO/sprints?state=future')).body[0];
+    if (sprint) {
+      const n1 = changes(vic).length;
+      await call(dev, 'PATCH', `/sprint/${sprint.id}`, { goal: 'live goal' });
+      assert.ok(await until(() => changes(vic).length > n1));
+    }
+    vic.close(); dana.close(); out.close();
+  });
+
   await test('recently viewed list', async () => {
     await call(admin, 'GET', '/issue/DEMO-2');
     const r = (await call(admin, 'GET', '/recent')).body;
@@ -747,6 +823,7 @@ try {
 
   console.log(`\n${passed} passed`);
 } finally {
+  (app.locals.hub as { close(): void }).close();
   server.close();
   await db.close();
   await rm(attachDir, { recursive: true, force: true });

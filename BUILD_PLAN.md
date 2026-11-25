@@ -78,6 +78,10 @@ Search column picker (incl. custom fields), bulk change (move/assign/priority/la
 results, CSV export (formula-safe), CSV import with dry-run preview. Create/edit/transition/delete refactored into
 shared functions so REST, bulk and import enforce identical rules.
 
+## Phase 4 — part 3 done: real-time updates
+SSE hub with per-space/per-user scoping, publish-after-commit change tracking for all write routes, live board/
+list/issue refresh, instant bell, Live indicator with reconnect. Single-instance hub (scale-out needs pub/sub).
+
 ## Phase 4 — remaining candidates
-Real-time updates (SSE/WebSocket), email delivery (+ filter subscriptions), SSO, dependency arrows on the Timeline,
-scheduled automation triggers, custom-field columns in the space List view.
+Email delivery (+ filter subscriptions), SSO, dependency arrows on the Timeline, scheduled automation triggers,
+custom-field columns in the space List view, multi-instance real-time (Postgres LISTEN/NOTIFY).

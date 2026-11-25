@@ -16,6 +16,7 @@ import { workflowRoutes } from './workflow.js';
 import { notificationRoutes } from './notifications.js';
 import { automationRoutes } from './automation.js';
 import { bulkRoutes } from './bulk.js';
+import { Hub, changeTracker, setHub } from './realtime.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -30,9 +31,15 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string } = {}) {
     res.json({ ok: true });
   });
   app.use('/api/auth', authRoutes(db));
+  // real-time: one SSE stream per tab; change events published after successful writes
+  const hub = new Hub(db);
+  setHub(hub);
+  app.locals.hub = hub;
+  app.get('/api/events', authMiddleware(db), hub.open);
   app.use(
     '/api',
     authMiddleware(db),
+    changeTracker(db, hub),
     projectRoutes(db),
     issueRoutes(db, store),
     sprintRoutes(db),

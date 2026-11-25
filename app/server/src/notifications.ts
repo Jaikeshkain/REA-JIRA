@@ -12,6 +12,7 @@ import type { Db } from './db.js';
 import { h } from './http.js';
 import { userRef } from './access.js';
 import type { AdfNode } from './adf.js';
+import { pingLater } from './realtime.js';
 
 export type Kind = 'assigned' | 'mentioned' | 'commented' | 'status';
 export const DIRECT: Kind[] = ['assigned', 'mentioned'];
@@ -31,7 +32,9 @@ export async function notify(
      RETURNING user_id`,
     [ev.issueId, ev.actorId, ev.kind, JSON.stringify(ev.data ?? {}), ids],
   );
-  return rows.map((r) => r.user_id as number);
+  const recipients = rows.map((r) => r.user_id as number);
+  pingLater(recipients); // live bell update
+  return recipients;
 }
 
 export const watchersOf = async (q: Db, issueId: number) =>

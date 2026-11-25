@@ -5,6 +5,7 @@ import { useAuth } from './auth';
 import { Avatar, Popover } from './ui';
 import { CreateModal } from './CreateModal';
 import { NotificationBell } from './Notifications';
+import { startRealtime, type LiveState } from './realtime';
 
 /** Lets pages refresh after a global create, and open the Create dialog with a preset project. */
 interface ShellCtx { openCreate: (projectKey?: string) => void; version: number; bump: () => void; toast: (msg: string, link?: string) => void }
@@ -32,6 +33,23 @@ export function Layout() {
   const openCreate = useCallback((projectKey?: string) => setCreate({ project: projectKey ?? currentProject }), [currentProject]);
 
   useEffect(() => { api.projects().then(setProjects); }, [version]);
+
+  // real-time: teammates' changes refresh the current page (debounced); own changes already bump
+  const [live, setLive] = useState<LiveState>('connecting');
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const stop = startRealtime({
+      onChange: (e) => {
+        window.dispatchEvent(new CustomEvent('tracker:change', { detail: e }));
+        if (e.actor === user?.accountId) return;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(bump, 350);
+      },
+      onNotification: () => window.dispatchEvent(new Event('tracker:notify')),
+      onState: setLive,
+    });
+    return () => { stop(); if (timer) clearTimeout(timer); };
+  }, [user?.accountId, bump]);
 
   // "c" opens Create (Jira shortcut), unless typing in a field
   useEffect(() => {
@@ -64,6 +82,10 @@ export function Layout() {
           </form>
           <button className="btn primary" onClick={() => openCreate()} title="Create (c)">+ Create</button>
           <span className="grow" />
+          <span className={`live live-${live}`} title={live === 'live' ? 'Live: changes by teammates appear automatically' : live === 'connecting' ? 'Connecting…' : 'Offline — reconnecting'}
+            aria-label={live === 'live' ? 'Live updates on' : 'Live updates reconnecting'} role="status">
+            <span className="live-dot" />{live === 'live' ? 'Live' : live === 'connecting' ? '…' : 'Offline'}
+          </span>
           <NotificationBell version={version} />
           <div className="menu-anchor">
             <button className="icon-btn" onClick={() => setMenu((m) => !m)} aria-label={`Account: ${user?.displayName}`}>

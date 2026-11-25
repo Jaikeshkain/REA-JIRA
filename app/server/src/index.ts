@@ -6,11 +6,13 @@ import { seedIfEmpty } from './seed.js';
 const port = Number(process.env.API_PORT ?? 4000);
 const db = await openDb();
 await seedIfEmpty(db);
-const server = buildApp(db).listen(port, '127.0.0.1', () => {
+const app = buildApp(db);
+const server = app.listen(port, '127.0.0.1', () => {
   console.log(`Tracker API listening on http://127.0.0.1:${port} (${process.env.DATABASE_URL ? 'Postgres' : 'PGlite'})`);
 });
 
 const shutdown = async () => {
+  (app.locals.hub as { close(): void } | undefined)?.close();
   server.close();
   await db.close();
   process.exit(0);

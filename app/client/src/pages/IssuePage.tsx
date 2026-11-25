@@ -7,6 +7,7 @@ import { useShell } from '../Layout';
 import { Attachments, LinkedItems } from '../IssueExtras';
 import { MentionTextarea } from '../MentionTextarea';
 import { RunList } from './Automation';
+import { useLiveChanges } from '../realtime';
 import { AdfView, Avatar, InlineText, Popover, PriorityIcon, StatusLozenge, TypeIcon, adfToEditable, fmtDate, timeAgo } from '../ui';
 
 export function IssuePage() {
@@ -41,6 +42,14 @@ export function IssuePage() {
     }
   };
   useEffect(() => { load(); setEditDesc(null); setDraft(null); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [key]);
+  // live: reload when a teammate changes this work item (drafts in progress are kept: they live in separate state)
+  const [remote, setRemote] = useState(false);
+  useLiveChanges((e) => {
+    if (!e.keys.some((k) => k.toUpperCase() === key.toUpperCase()) || e.actor === user?.accountId) return;
+    load();
+    setRemote(true);
+    setTimeout(() => setRemote(false), 4000);
+  }, [key, user?.accountId]);
   useEffect(() => {
     if (!issue) return;
     api.assignable(issue.fields.project.key).then(setUsers).catch(() => {});
@@ -77,6 +86,7 @@ export function IssuePage() {
 
   return (
     <div className="page issue-page">
+      {remote && <div className="remote-banner" role="status">↻ Updated by a teammate just now</div>}
       <div className="crumbs">
         <Link to="/projects">Spaces</Link> / <Link to={`/projects/${f.project.key}/board`}>{f.project.name}</Link> /{' '}
         {f.parent && <><Link to={`/browse/${f.parent.key}`}>{f.parent.key}</Link> / </>}

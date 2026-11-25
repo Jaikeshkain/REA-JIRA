@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api, type AppNotification, type Inbox } from './api';
 import { Avatar, Popover, timeAgo } from './ui';
 
-const POLL_MS = 30_000;
+const POLL_MS = 120_000; // fallback only: the live stream pings on new notifications
 
 function sentence(n: AppNotification) {
   const who = <strong>{n.actor.displayName}</strong>;
@@ -25,6 +25,10 @@ export function NotificationBell({ version }: { version: number }) {
   const [onlyUnread, setOnlyUnread] = useState(false);
 
   const load = useCallback(() => api.notifications(tab, 30).then(setInbox, () => {}), [tab]);
+  useEffect(() => {
+    window.addEventListener('tracker:notify', load);
+    return () => window.removeEventListener('tracker:notify', load);
+  }, [load]);
   useEffect(() => {
     load();
     const t = setInterval(() => { if (document.visibilityState === 'visible') load(); }, POLL_MS);

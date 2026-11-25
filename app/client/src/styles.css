@@ -495,3 +495,13 @@ code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
 .import-table { max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
 .row-bad td { background: #fff4f3; }
 @media (prefers-color-scheme: dark) { .row-bad td { background: #3a1a17; } }
+
+/* ---------- live updates ---------- */
+.live { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--text-muted); padding: 2px 8px; border-radius: 10px; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+.live-live { color: #1f845a; } .live-live .live-dot { background: #1f845a; box-shadow: 0 0 0 3px color-mix(in srgb, #1f845a 25%, transparent); }
+.live-offline { color: var(--danger); } .live-offline .live-dot { background: var(--danger); }
+@media (prefers-reduced-motion: no-preference) { .live-live .live-dot { animation: livepulse 2.4s ease-in-out infinite; } }
+@keyframes livepulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, #1f845a 0%, transparent); } }
+.remote-banner { position: sticky; top: 0; z-index: 5; margin: -8px 0 10px; padding: 6px 12px; border-radius: 6px; background: var(--brand-soft); color: var(--brand); font-size: 13px; font-weight: 600; }
+@media (max-width: 700px) { .live { display: none; } }

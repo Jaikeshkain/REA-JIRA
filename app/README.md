@@ -27,7 +27,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (27 checks)
+npm test           # API smoke test on an in-memory database (28 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -113,6 +113,23 @@ npm run build      # type-check server + client, production-build client
 - API: `GET|POST /api/project/:key/fields`, `PUT|DELETE /api/field/:id`; `GET /api/project/:key/workflow`,
   `POST /api/project/:key/statuses`, `PUT|DELETE /api/status/:id[?moveTo=]`, `POST /api/project/:key/transitions`,
   `PUT|DELETE /api/transition/:id`; `customfield_<id>` keys on create and `PATCH /api/issue/:key/fields/customfield_<id>`.
+
+## Phase 4 (part 3): real-time updates
+
+- Changes by teammates appear without reloading: boards, backlog, lists, summary and dashboards refresh shortly
+  after a change; an open work item reloads itself and shows **"Updated by a teammate just now"** (half-written
+  comments and description edits are kept). The bell updates instantly on new notifications. A **Live** marker in the
+  top bar shows the connection (it reconnects automatically with backoff).
+- How it works: one **Server-Sent Events** stream per tab (`GET /api/events`), read with `fetch` streaming so the
+  session token stays in the `Authorization` header (never in a URL or log).
+- **Scoped:** change events reach only people who can browse that space; notification pings reach only their
+  recipient. Events carry only the space key, work item keys and actor id — clients refetch through the normal,
+  permission-checked API, so no content travels on the stream.
+- **After commit only:** events are published when a write request finishes successfully, so a failed or rolled-back
+  change never triggers refreshes. Every write route is covered generically (work items, comments, links,
+  attachments, sprints, workflow, fields, automation, bulk, import); deletes are resolved before the rows go.
+- Limits: in-process hub (one server instance; a multi-instance deployment would add Redis/Postgres LISTEN/NOTIFY),
+  max 8 streams per person, 25 s heartbeats.
 
 ## Phase 4 (part 2): working in bulk
 
