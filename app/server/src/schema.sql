@@ -291,6 +291,22 @@ CREATE INDEX IF NOT EXISTS issue_custom_values_field ON issue_custom_values(fiel
 ALTER TABLE transitions ADD COLUMN IF NOT EXISTS required_fields TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE transitions ADD COLUMN IF NOT EXISTS allowed_roles TEXT[];
 
+-- ---------------------------------------------------------------- Phase 3: notifications
+
+-- kind: assigned | mentioned (Direct)  ·  commented | status (Watching)
+CREATE TABLE IF NOT EXISTS notifications (
+  id          SERIAL PRIMARY KEY,
+  tenant_id   INT NOT NULL REFERENCES tenants(id),
+  user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  actor_id    INT NOT NULL REFERENCES users(id),
+  issue_id    INT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL CHECK (kind IN ('assigned','mentioned','commented','status')),
+  data        JSONB NOT NULL DEFAULT '{}',
+  read_at     TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS recent_views (
   user_id      INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   entity_type  TEXT NOT NULL,

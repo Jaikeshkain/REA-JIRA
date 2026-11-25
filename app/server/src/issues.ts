@@ -9,6 +9,7 @@ import { sanitizeAdf, adfToText } from './adf.js';
 import { rankBetween } from './lexorank.js';
 import { parse, compile, FROM } from './jql.js';
 import { setIssueSprint } from './sprints.js';
+import { excerpt, linkMentions, mentionedIds, notify, watch, watchersOf } from './notifications.js';
 import { transitionsFor, applyTransition, trJson } from './workflow.js';
 import { appliesTo, cfKey, fieldJson, fieldsOf, jqlCtx, normalise, setValue, valuesFor } from './customfields.js';
 import { linksFor } from './links.js';
@@ -201,6 +202,9 @@ export function issueRoutes(db: Db, store: FileStore) {
         const unknown = Object.keys(fields).filter((k) => /^customfield_/.test(k) && !cfs.some((f) => cfKey(f.id) === k));
         if (unknown.length) throw bad(`Unknown field ${unknown[0]} for this space`);
 
+        if (fields.startdate && fields.duedate && fields.startdate > fields.duedate) {
+          throw bad('Start date must be on or before the due date', { startdate: 'order' });
+        }
         const [first] = await q.query(`SELECT id FROM statuses WHERE project_id = $1 ORDER BY position LIMIT 1`, [project.id]);
         // Atomic per-project counter → stable key KEY-N
         const [{ issue_counter: n }] = await q.query(
@@ -228,9 +232,11 @@ export function issueRoutes(db: Db, store: FileStore) {
           await q.query(`INSERT INTO issue_custom_values (issue_id, field_id, value) VALUES ($1,$2,$3::jsonb)`, [row.id, cv.id, JSON.stringify(cv.value)]);
         }
         const watcherIds = new Set<number>([user.id, ...(watchers ?? []).map(Number)]);
+        if (assignee?.id) watcherIds.add(assignee.id);
         for (const w of watcherIds) {
           await q.query(`INSERT INTO watchers (issue_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [row.id, w]);
         }
+        if (assignee?.id) await notify(q, { actorId: user.id, issueId: row.id, kind: 'assigned', recipients: [assignee.id] });
         await logChange(q, row.id, user.id, 'created', {}, { v: row.id, s: key });
         return { id: row.id, key };
       });
@@ -302,15 +308,23 @@ export function issueRoutes(db: Db, store: FileStore) {
             return set('summary', s, { s: row.summary }, { s });
           }
           case 'description': {
-            const doc = sanitizeAdf(value);
-            return set('description', doc, { s: adfToText(row.description) }, { s: adfToText(doc) });
+            const doc = await linkMentions(q, row.project_id, sanitizeAdf(value));
+            await set('description', doc, { s: adfToText(row.description) }, { s: adfToText(doc) });
+            const before = new Set(mentionedIds(row.description));
+            await notify(q, { actorId: user.id, issueId: row.id, kind: 'mentioned', recipients: mentionedIds(doc).filter((id) => !before.has(id)), data: { where: 'description', excerpt: excerpt(adfToText(doc)) } });
+            return;
           }
           case 'assignee': case 'reporter': {
             const u = await userInTenant(q, user.tenantId, value?.accountId ?? value);
             if (field === 'reporter' && !u) throw bad('Reporter is required');
             const col = field === 'assignee' ? 'assignee_id' : 'reporter_id';
             const prevName = field === 'assignee' ? row.a_name : row.r_name;
-            return set(col, u?.id ?? null, { v: row[col], s: prevName }, { v: u?.id, s: u?.display_name });
+            await set(col, u?.id ?? null, { v: row[col], s: prevName }, { v: u?.id, s: u?.display_name });
+            if (field === 'assignee' && u && u.id !== row.assignee_id) {
+              await watch(q, row.id, u.id);
+              await notify(q, { actorId: user.id, issueId: row.id, kind: 'assigned', recipients: [u.id] });
+            }
+            return;
           }
           case 'priority': {
             const [pr] = await q.query(`SELECT * FROM priorities WHERE id::text = $1 OR lower(name) = lower($1)`, [
@@ -331,6 +345,12 @@ export function issueRoutes(db: Db, store: FileStore) {
           case 'duedate': case 'startdate': {
             const d = value == null || value === '' ? null : z.string().regex(/^\d{4}-\d{2}-\d{2}$/).parse(value);
             const col = field === 'duedate' ? 'due_date' : 'start_date';
+            // Timeline bars need start <= due
+            const other = field === 'duedate' ? row.start_date : row.due_date;
+            if (d && other) {
+              const [start, due] = field === 'duedate' ? [toDate(other), d] : [d, toDate(other)];
+              if (start > due) throw bad('Start date must be on or before the due date', { [field]: 'order' });
+            }
             return set(col, d, { s: row[col] ? toDate(row[col]) : null }, { s: d });
           }
           case 'storypoints': {
@@ -502,13 +522,22 @@ export function issueRoutes(db: Db, store: FileStore) {
       const { row, role } = await loadIssue(db, user, String(req.params.key));
       if (!can(role, 'ADD_COMMENTS', user.isSiteAdmin)) throw forbidden('ADD_COMMENTS');
       const body = z.object({ body: z.any(), parentId: z.union([z.string(), z.number()]).nullish() }).parse(req.body);
-      const doc = sanitizeAdf(body.body);
+      const doc = await linkMentions(db, row.project_id, sanitizeAdf(body.body));
       if (!doc || !adfToText(doc)) throw bad('Comment cannot be empty');
-      const [c] = await db.query(
-        `INSERT INTO comments (issue_id, author_id, parent_id, body) VALUES ($1,$2,$3,$4) RETURNING *`,
-        [row.id, user.id, body.parentId ? Number(body.parentId) : null, doc],
-      );
-      await db.query(`UPDATE issues SET updated_at = now() WHERE id = $1`, [row.id]);
+      const c = await db.tx(async (q) => {
+        const [c] = await q.query(
+          `INSERT INTO comments (issue_id, author_id, parent_id, body) VALUES ($1,$2,$3,$4) RETURNING *`,
+          [row.id, user.id, body.parentId ? Number(body.parentId) : null, doc],
+        );
+        await q.query(`UPDATE issues SET updated_at = now() WHERE id = $1`, [row.id]);
+        // Jira: commenting watches the work item; @mentions are Direct, everyone else watching gets "commented"
+        const data = { commentId: String(c.id), excerpt: excerpt(adfToText(doc)) };
+        const mentioned = await notify(q, { actorId: user.id, issueId: row.id, kind: 'mentioned', recipients: mentionedIds(doc), data });
+        const watchers = (await watchersOf(q, row.id)).filter((id) => !mentioned.includes(id));
+        await notify(q, { actorId: user.id, issueId: row.id, kind: 'commented', recipients: watchers, data });
+        await watch(q, row.id, user.id);
+        return c;
+      });
       res.status(201);
       return commentJson({ ...c, display_name: user.displayName, email: user.email, avatar_color: user.avatarColor });
     }),
@@ -523,9 +552,14 @@ export function issueRoutes(db: Db, store: FileStore) {
       if (!c) throw notFound('Comment');
       const perm = c.author_id === user.id ? 'EDIT_OWN_COMMENTS' : 'EDIT_ALL_COMMENTS';
       if (!can(role, perm, user.isSiteAdmin)) throw forbidden(perm);
-      const doc = sanitizeAdf(req.body?.body);
+      const doc = await linkMentions(db, row.project_id, sanitizeAdf(req.body?.body));
       if (!doc || !adfToText(doc)) throw bad('Comment cannot be empty');
       const [u] = await db.query(`UPDATE comments SET body = $1, updated_at = now() WHERE id = $2 RETURNING *`, [doc, c.id]);
+      const before = new Set(mentionedIds(c.body));
+      await notify(db, {
+        actorId: user.id, issueId: row.id, kind: 'mentioned', recipients: mentionedIds(doc).filter((id) => !before.has(id)),
+        data: { commentId: String(c.id), excerpt: excerpt(adfToText(doc)) },
+      });
       return commentJson({ ...u, display_name: user.displayName });
     }),
   );

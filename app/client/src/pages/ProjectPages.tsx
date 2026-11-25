@@ -24,6 +24,7 @@ export function ProjectLayout() {
         {p.features.sprints && <NavLink to="backlog">Backlog</NavLink>}
         <NavLink to="board">Board</NavLink>
         <NavLink to="list">List</NavLink>
+        <NavLink to="timeline">Timeline</NavLink>
         {p.features.sprints && <NavLink to="reports">Reports</NavLink>}
         {p.myPermissions.includes('ADMINISTER_PROJECTS') && <NavLink to="settings">Settings</NavLink>}
       </nav>

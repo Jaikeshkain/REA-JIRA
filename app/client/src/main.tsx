@@ -11,6 +11,7 @@ import { IssuePage } from './pages/IssuePage';
 import { Search } from './pages/Search';
 import { Backlog } from './pages/Backlog';
 import { Reports } from './pages/Reports';
+import { Timeline } from './pages/Timeline';
 import { Filters } from './pages/Filters';
 import { DashboardList, DashboardView } from './pages/Dashboards';
 
@@ -31,6 +32,7 @@ function App() {
           <Route path="summary" element={<Summary />} />
           <Route path="settings" element={<Settings />} />
           <Route path="backlog" element={<Backlog />} />
+          <Route path="timeline" element={<Timeline />} />
           <Route path="reports" element={<Reports />} />
           <Route path="reports/:sprintId" element={<Reports />} />
         </Route>

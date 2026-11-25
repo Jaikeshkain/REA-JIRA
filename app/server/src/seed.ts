@@ -148,6 +148,21 @@ export async function seed(db: Db) {
     await q.query(`INSERT INTO issue_custom_values (issue_id, field_id, value) VALUES ($1,$2,'"Acme Bank"'::jsonb)`, [ids[6], fCust.id]);
     // validator: work needs an assignee before it can be Done
     await q.query(`UPDATE transitions SET required_fields = '{assignee}' WHERE project_id = $1 AND to_status_id = $2`, [p.id, st.Done]);
+    // ---- Phase 3 demo: epic start dates for the Timeline, a few notifications for Dana
+    const epicStarts: Record<number, number> = { 1: -6, 2: -4, 3: 1, 4: 8, 5: -10 };
+    for (const [n, off] of Object.entries(epicStarts)) {
+      await q.query(`UPDATE issues SET start_date = current_date + $1::int WHERE id = $2`, [off, ids[Number(n) - 1]]);
+    }
+    for (const n of [6, 7, 8, 9, 10]) {
+      await q.query(`UPDATE issues SET start_date = due_date - 4 WHERE id = $1 AND due_date IS NOT NULL`, [ids[n - 1]]);
+    }
+    await q.query(
+      `INSERT INTO notifications (tenant_id, user_id, actor_id, issue_id, kind, data, created_at) VALUES
+        ($1,$2,$3,$4,'assigned','{}', now() - interval '2 hours'),
+        ($1,$2,$3,$5,'mentioned','{"excerpt":"@Dana Dev can you look at the empty-password case today?"}', now() - interval '40 minutes'),
+        ($1,$2,$3,$4,'status','{"from":"To Do","to":"In Progress","category":"in_progress"}', now() - interval '10 minutes')`,
+      [tenant.id, dev.id, admin.id, ids[6], ids[10]],
+    );
     // DEMO-12 finished on day 2 so the burndown has a step
     await q.query(`UPDATE issues SET resolved_at = $1 WHERE id = $2`, [new Date(start.getTime() + 2 * day).toISOString(), ids[11]]);
     await q.query(`INSERT INTO comments (issue_id, author_id, body) VALUES ($1,$2,$3)`, [

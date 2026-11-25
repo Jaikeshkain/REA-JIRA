@@ -47,7 +47,10 @@ export function AdfView({ doc, empty = null }: { doc: Adf | null | undefined; em
       case 'blockquote': return <blockquote key={i}>{kids}</blockquote>;
       case 'hardBreak': return <br key={i} />;
       case 'rule': return <hr key={i} />;
-      case 'mention': return <span key={i} className="mention">@{n.attrs?.text}</span>;
+      case 'mention': {
+        const t = String(n.attrs?.text ?? '');
+        return <span key={i} className="mention">{t.startsWith('@') ? t : `@${t}`}</span>;
+      }
       case 'text': {
         let el: ReactNode = n.text;
         for (const m of n.marks ?? []) {
@@ -68,7 +71,10 @@ export function AdfView({ doc, empty = null }: { doc: Adf | null | undefined; em
 /** ADF → editable plain text (inverse of the server's textToAdf for paragraphs and bullet lists). */
 export function adfToEditable(doc: Adf | null | undefined): string {
   if (!doc?.content) return '';
-  const text = (n: Adf): string => (n.type === 'text' ? n.text ?? '' : (n.content ?? []).map(text).join(n.type === 'hardBreak' ? '\n' : ''));
+  const text = (n: Adf): string =>
+    n.type === 'text' ? n.text ?? ''
+    : n.type === 'mention' ? String(n.attrs?.text ?? '') // round-trips as "@Name"; the server re-links it
+    : (n.content ?? []).map(text).join(n.type === 'hardBreak' ? '\n' : '');
   return doc.content
     .map((b) =>
       b.type === 'bulletList' ? (b.content ?? []).map((li) => `- ${text(li)}`).join('\n')

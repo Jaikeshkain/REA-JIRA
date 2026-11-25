@@ -65,6 +65,10 @@ viewer-scoped gadget data. (Filter email subscriptions need email delivery — d
 7 custom field types with required/applies-to, History, JQL by name/id; workflow editor for statuses (order, category,
 delete-with-move) and transitions with validator (required fields) + condition (roles) rules and a transition dialog.
 
-## Queued (Phase 3, remaining)
-1. Notifications (in-app bell: assigned, @mention, comments/status on watched issues) + Timeline view
-2. Later: automation, real-time updates, email (+ filter subscriptions), SSO, custom-field columns in List/Search
+## Phase 3 — part 4 done: notifications + timeline
+In-app bell (Direct / Watching), @mentions with suggestions, auto-watch on create/comment/assign; Timeline with
+drag-to-schedule, zoom levels, roll-up epic bars, start ≤ due rule.
+
+## Phase 3 complete. Candidates for Phase 4
+Automation rules, real-time updates (SSE/WebSocket), email delivery (+ filter subscriptions), SSO, custom-field
+columns in List/Search, dependency arrows on the Timeline, CSV import/export, bulk edit.

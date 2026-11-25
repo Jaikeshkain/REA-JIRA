@@ -77,6 +77,12 @@ export type GadgetData =
   | { source: { id: string; name: string; jql: string } | null; jql: string; total: number; issues: Issue[] }
   | { source: { id: string; name: string }; field: string; total: number; groups: { name: string; count: number }[] }
   | { source: { id: string; name: string }; days: number; totals: { created: number; resolved: number }; series: { date: string; created: number; resolved: number }[] };
+export type NotificationKind = 'assigned' | 'mentioned' | 'commented' | 'status';
+export interface AppNotification {
+  id: string; kind: NotificationKind; read: boolean; created: string; actor: User;
+  issue: { key: string; summary: string }; data: { excerpt?: string; from?: string; to?: string; where?: string };
+}
+export interface Inbox { unread: { unread: number; direct: number; watching: number }; items: AppNotification[] }
 export type SprintState = 'future' | 'active' | 'closed';
 export interface Sprint { id: string; name: string; goal: string; state: SprintState; startDate: string | null; endDate: string | null; completeDate: string | null }
 export interface BacklogData {
@@ -204,6 +210,8 @@ export const api = {
   updateTransition: (id: string, body: { name?: string; requiredFields?: string[]; allowedRoles?: string[] | null }) =>
     call<Workflow>('PUT', `/transition/${id}`, body),
   deleteTransition: (id: string) => call<Workflow>('DELETE', `/transition/${id}`),
+  notifications: (tab: 'direct' | 'watching' | 'all' = 'all', limit = 30) => call<Inbox>('GET', `/notifications?tab=${tab}&limit=${limit}`),
+  markRead: (body: { ids?: string[]; all?: boolean; tab?: 'direct' | 'watching' | 'all' }) => call('POST', '/notifications/read', body),
   linkTypes: () => call<{ issueLinkTypes: LinkType[] }>('GET', '/issueLinkType'),
   createLink: (type: string, outwardKey: string, inwardKey: string) =>
     call<{ id: string }>('POST', '/issueLink', { type: { name: type }, outwardIssue: { key: outwardKey }, inwardIssue: { key: inwardKey } }),

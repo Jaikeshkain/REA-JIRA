@@ -5,6 +5,7 @@ import { BUILTIN_LABELS, BuiltinInput, CustomFieldInput, inputValue, isMissing, 
 import { useAuth } from '../auth';
 import { useShell } from '../Layout';
 import { Attachments, LinkedItems } from '../IssueExtras';
+import { MentionTextarea } from '../MentionTextarea';
 import { AdfView, Avatar, InlineText, Popover, PriorityIcon, StatusLozenge, TypeIcon, adfToEditable, fmtDate, timeAgo } from '../ui';
 
 export function IssuePage() {
@@ -85,7 +86,7 @@ export function IssuePage() {
           <h2 className="section-title">Description</h2>
           {editDesc !== null ? (
             <div className="editor">
-              <textarea rows={8} value={editDesc} onChange={(e) => setEditDesc(e.target.value)} aria-label="Description" autoFocus />
+              <MentionTextarea rows={8} value={editDesc} onChange={setEditDesc} people={users} label="Description" autoFocus />
               <div className="editor-actions">
                 <button className="btn primary" onClick={async () => { await edit('description', editDesc || null); setEditDesc(null); }}>Save</button>
                 <button className="btn subtle" onClick={() => setEditDesc(null)}>Cancel</button>
@@ -135,7 +136,7 @@ export function IssuePage() {
                     <button className="fake-input" onClick={() => setDraft('')}>Add a comment…</button>
                   ) : (
                     <div className="editor grow">
-                      <textarea rows={3} autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} aria-label="Comment" />
+                      <MentionTextarea rows={3} autoFocus value={draft} onChange={setDraft} people={users} label="Comment" />
                       <div className="editor-actions">
                         <button className="btn primary" disabled={!draft.trim()}
                           onClick={() => run(async () => { await api.addComment(key, draft); setDraft(null); })}>Save</button>
@@ -147,7 +148,7 @@ export function IssuePage() {
               )}
               {draft === null && can('ADD_COMMENTS') && <p className="muted small tip"><strong>Pro tip:</strong> press <kbd>M</kbd> to comment</p>}
               {comments.map((c) => (
-                <CommentItem key={c.id} c={c} mine={c.author.accountId === user?.accountId} issueKey={key} onChange={() => run(async () => {})} />
+                <CommentItem key={c.id} c={c} mine={c.author.accountId === user?.accountId} issueKey={key} people={users} onChange={() => run(async () => {})} />
               ))}
             </div>
           ) : (
@@ -388,7 +389,7 @@ function ChildCreator({ parent, onCreated }: { parent: Issue; onCreated: () => v
   );
 }
 
-function CommentItem({ c, mine, issueKey, onChange }: { c: Comment; mine: boolean; issueKey: string; onChange: () => void }) {
+function CommentItem({ c, mine, issueKey, people, onChange }: { c: Comment; mine: boolean; issueKey: string; people: User[]; onChange: () => void }) {
   const [edit, setEdit] = useState<string | null>(null);
   return (
     <div className="comment">
@@ -397,7 +398,7 @@ function CommentItem({ c, mine, issueKey, onChange }: { c: Comment; mine: boolea
         <div><strong>{c.author.displayName}</strong> <span className="muted small">{timeAgo(c.created)}{c.updated !== c.created ? ' · edited' : ''}</span></div>
         {edit !== null ? (
           <div className="editor">
-            <textarea rows={3} value={edit} onChange={(e) => setEdit(e.target.value)} aria-label="Edit comment" />
+            <MentionTextarea rows={3} value={edit} onChange={setEdit} people={people} label="Edit comment" />
             <div className="editor-actions">
               <button className="btn primary" onClick={async () => { await api.editComment(issueKey, c.id, edit); setEdit(null); onChange(); }}>Save</button>
               <button className="btn subtle" onClick={() => setEdit(null)}>Cancel</button>

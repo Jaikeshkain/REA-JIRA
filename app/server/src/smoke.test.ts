@@ -528,6 +528,57 @@ try {
     assert.equal((await call(admin, 'GET', '/issue/DEMO-6')).body.fields.status.name, 'To Do');
   });
 
+  await test('notifications: assigned, mentions, watching, read state, no self/outsider', async () => {
+    const inbox = async (t: string, tab = 'all') => (await call(t, 'GET', `/notifications?tab=${tab}`)).body;
+    const before = { dev: (await inbox(dev)).items.length, admin: (await inbox(admin)).items.length, viewer: (await inbox(viewer)).items.length };
+    // admin creates work assigned to Dana → Direct "assigned" for Dana only
+    const c = await call(admin, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'Notify me', assignee: { accountId: '2' } } });
+    const key = c.body.key;
+    let d = await inbox(dev, 'direct');
+    assert.equal(d.items[0].kind, 'assigned');
+    assert.equal(d.items[0].issue.key, key);
+    assert.equal(d.items[0].actor.displayName, 'Alex Admin');
+    assert.equal((await inbox(admin)).items.length, before.admin, 'actor is not notified');
+    // Vic watches; Dana comments mentioning Alex → Alex "mentioned" (not also "commented"), Vic "commented", Dana nothing
+    await call(admin, 'POST', `/issue/${key}/watchers`, { accountId: '3' });
+    const cm = await call(dev, 'POST', `/issue/${key}/comment`, { body: '@Alex Admin please review the copy' });
+    assert.equal(cm.body.body.content[0].content[0].type, 'mention', '@name became a mention node');
+    const a = await inbox(admin);
+    assert.deepEqual(a.items.filter((n: any) => n.issue.key === key).map((n: any) => n.kind), ['mentioned']);
+    assert.match(a.items[0].data.excerpt, /please review/);
+    const v = await inbox(viewer, 'watching');
+    assert.equal(v.items[0].kind, 'commented');
+    assert.equal((await inbox(dev)).items.filter((n: any) => n.issue.key === key).length, 1, 'only the earlier assignment');
+    // status change → all watchers except the actor
+    const tr = (await call(dev, 'GET', `/issue/${key}/transitions`)).body.transitions.find((t: any) => t.to.name === 'In Progress');
+    await call(dev, 'POST', `/issue/${key}/transitions`, { transition: { id: tr.id } });
+    assert.equal((await inbox(admin)).items[0].kind, 'status');
+    assert.deepEqual((await inbox(admin)).items[0].data, { from: 'To Do', to: 'In Progress', category: 'in_progress' });
+    assert.equal((await inbox(viewer)).items[0].kind, 'status');
+    // people outside the space are never mentioned/notified
+    await call(dev, 'POST', `/issue/${key}/comment`, { body: 'cc @Out Two' });
+    const outTok = (await call(null, 'POST', '/auth/login', { email: 'out2@tracker.test', password: 'longenough1' })).body.token;
+    assert.equal((await inbox(outTok)).items.length, 0);
+    // read state + counts
+    const unread = (await inbox(viewer)).unread;
+    assert.ok(unread.unread >= 2 && unread.watching >= 2);
+    const first = (await inbox(viewer)).items[0];
+    await call(viewer, 'POST', '/notifications/read', { ids: [first.id] });
+    assert.equal((await inbox(viewer)).unread.unread, unread.unread - 1);
+    await call(viewer, 'POST', '/notifications/read', { all: true, tab: 'watching' });
+    assert.equal((await inbox(viewer)).unread.watching, 0);
+    assert.equal((await call(viewer, 'GET', '/notifications?unread=true')).body.items.length, (await inbox(viewer)).unread.unread);
+    // people can only read their own
+    await call(dev, 'POST', '/notifications/read', { ids: [a.items[0].id] });
+    assert.equal((await inbox(admin)).items.find((n: any) => n.id === a.items[0].id).read, false);
+    // Timeline rule: start must not be after due
+    await call(dev, 'PATCH', `/issue/${key}/fields/duedate`, { value: '2026-12-10' });
+    assert.equal((await call(dev, 'PATCH', `/issue/${key}/fields/startdate`, { value: '2026-12-20' })).status, 400);
+    assert.equal((await call(dev, 'PATCH', `/issue/${key}/fields/startdate`, { value: '2026-12-01' })).status, 200);
+    assert.equal((await call(dev, 'PATCH', `/issue/${key}/fields/duedate`, { value: '2026-11-30' })).status, 400);
+    assert.ok(before.dev >= 0 && before.viewer >= 0);
+  });
+
   await test('recently viewed list', async () => {
     await call(admin, 'GET', '/issue/DEMO-2');
     const r = (await call(admin, 'GET', '/recent')).body;

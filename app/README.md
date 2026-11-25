@@ -27,7 +27,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (22 checks)
+npm test           # API smoke test on an in-memory database (23 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -113,6 +113,23 @@ npm run build      # type-check server + client, production-build client
 - API: `GET|POST /api/project/:key/fields`, `PUT|DELETE /api/field/:id`; `GET /api/project/:key/workflow`,
   `POST /api/project/:key/statuses`, `PUT|DELETE /api/status/:id[?moveTo=]`, `POST /api/project/:key/transitions`,
   `PUT|DELETE /api/transition/:id`; `customfield_<id>` keys on create and `PATCH /api/issue/:key/fields/customfield_<id>`.
+
+## Phase 3 (part 4): notifications + timeline
+
+- **Notifications bell** (top bar, unread badge, refreshes every 30 s): **Direct** — someone assigned work to you
+  or @mentioned you; **Watching** — comments and status changes on work you watch. Excerpts for comments/mentions,
+  "Only unread", mark one (by opening it) or all as read.
+- **Rules:** the person who made the change is never notified; only people who can still browse the work are; one
+  notification per person per event (a mention outranks "commented"). Creating, commenting on, or being assigned work
+  makes you a watcher (Jira behaviour).
+- **@mentions:** type `@` in a comment or description for suggestions; `@Display Name` becomes a mention (shown as a
+  chip) for people in the space. Editing only notifies newly mentioned people.
+- **Timeline** tab: epics with their child work, bars from start to due date; Weeks / Months / Quarters zoom, Today
+  line, child progress (done/total). Drag a bar to move it, drag its ends to change start/due, click an empty lane to
+  schedule a week. Epics without their own dates show a dashed bar rolled up from their children. Start must be on or
+  before due (enforced by the API).
+- API: `GET /api/notifications?tab=direct|watching|all&unread=true`, `POST /api/notifications/read {ids | all, tab}`.
+  Email delivery is deferred; the notification rows are what an email worker would send.
 
 The demo space has **Severity** (dropdown, Bugs only) and **Customer** (text) fields, and moving to **Done**
 requires an **Assignee**.

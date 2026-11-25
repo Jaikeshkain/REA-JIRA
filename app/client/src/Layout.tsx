@@ -4,6 +4,7 @@ import { api, type ProjectSummary } from './api';
 import { useAuth } from './auth';
 import { Avatar, Popover } from './ui';
 import { CreateModal } from './CreateModal';
+import { NotificationBell } from './Notifications';
 
 /** Lets pages refresh after a global create, and open the Create dialog with a preset project. */
 interface ShellCtx { openCreate: (projectKey?: string) => void; version: number; bump: () => void; toast: (msg: string, link?: string) => void }
@@ -63,6 +64,7 @@ export function Layout() {
           </form>
           <button className="btn primary" onClick={() => openCreate()} title="Create (c)">+ Create</button>
           <span className="grow" />
+          <NotificationBell version={version} />
           <div className="menu-anchor">
             <button className="icon-btn" onClick={() => setMenu((m) => !m)} aria-label={`Account: ${user?.displayName}`}>
               <Avatar user={user} size={28} />

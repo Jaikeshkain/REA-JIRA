@@ -14,6 +14,7 @@ import { projectByKey, requirePerm } from './access.js';
 import type { Role } from './permissions.js';
 import { adfToText } from './adf.js';
 import { cfKey } from './customfields.js';
+import { notify, watchersOf } from './notifications.js';
 
 /** Built-in fields a validator can require (id → label). Custom fields use `customfield_<id>`. */
 export const REQUIRABLE: Record<string, string> = {
@@ -71,6 +72,10 @@ export async function applyTransition(q: Db, user: AuthUser, role: Role | null, 
     `INSERT INTO changelog (issue_id, actor_id, field, from_value, from_string, to_value, to_string) VALUES ($1,$2,'status',$3,$4,$5,$6)`,
     [issue.id, user.id, issue.status_id, from?.name ?? null, tr.to_status_id, tr.to_name],
   );
+  await notify(q, {
+    actorId: user.id, issueId: issue.id, kind: 'status', recipients: await watchersOf(q, issue.id),
+    data: { from: from?.name ?? null, to: tr.to_name, category: tr.to_category },
+  });
   if ((issue.resolution ?? null) !== resolution) {
     await q.query(`INSERT INTO changelog (issue_id, actor_id, field, from_string, to_string) VALUES ($1,$2,'resolution',$3,$4)`, [
       issue.id, user.id, issue.resolution ?? null, resolution,
