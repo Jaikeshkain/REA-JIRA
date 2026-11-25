@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, ApiError, type Comment, type Issue, type Priority, type Sprint, type User } from '../api';
 import { useAuth } from '../auth';
 import { useShell } from '../Layout';
+import { Attachments, LinkedItems } from '../IssueExtras';
 import { AdfView, Avatar, InlineText, Popover, PriorityIcon, StatusLozenge, TypeIcon, adfToEditable, fmtDate, timeAgo } from '../ui';
 
 export function IssuePage() {
@@ -97,6 +98,9 @@ export function IssuePage() {
             </div>
           )}
 
+          <Attachments issue={issue} canAdd={can('CREATE_ATTACHMENTS')} canDeleteOwn={can('DELETE_OWN_ATTACHMENTS')}
+            canDeleteAll={can('DELETE_ALL_ATTACHMENTS')} onChange={() => { load(); bump(); }} onError={toast} />
+
           {(issue.children?.length ?? 0) > 0 || f.issuetype.hierarchyLevel >= 0 ? (
             <>
               <h2 className="section-title">{f.issuetype.hierarchyLevel === 1 ? 'Child work items' : 'Subtasks'}</h2>
@@ -112,6 +116,8 @@ export function IssuePage() {
               {can('EDIT_ISSUES') && <ChildCreator parent={issue} onCreated={() => { load(); bump(); }} />}
             </>
           ) : null}
+
+          <LinkedItems issue={issue} canLink={can('LINK_ISSUES')} onChange={() => { load(); bump(); }} onError={toast} />
 
           <h2 className="section-title">Activity</h2>
           <div className="tabs small" role="tablist">

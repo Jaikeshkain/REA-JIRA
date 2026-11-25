@@ -245,6 +245,18 @@ export function compile(q: Query, ctx: Ctx, params: unknown[]): { where: string;
           return `(SELECT key FROM projects WHERE tenant_id = ${P(ctx.tenantId)} AND (upper(key) = upper(${P(s)}) OR lower(name) = lower(${P(s)})) LIMIT 1)`;
         });
       case 'key': case 'issuekey': case 'id': case 'issue': {
+        // issue in linkedIssues("KEY"[, "link phrase as seen from KEY"])
+        if ((op === 'in' || op === 'not in') && values[0]?.kind === 'fn') {
+          const fn = values[0];
+          if (fn.name !== 'linkedissues' || !fn.args[0]) throw bad('JQL: use linkedIssues("KEY") or linkedIssues("KEY", "blocks")');
+          const src = `(SELECT id FROM issues WHERE tenant_id = ${P(ctx.tenantId)} AND upper(key) = upper(${P(fn.args[0])}))`;
+          const phrase = fn.args[1] ? P(fn.args[1].toLowerCase()) : null;
+          const sub = `(SELECT l.inward_issue_id FROM issue_links l JOIN link_types lt ON lt.id = l.type_id
+                          WHERE l.outward_issue_id = ${src}${phrase ? ` AND lower(lt.outward) = ${phrase}` : ''}
+                        UNION SELECT l.outward_issue_id FROM issue_links l JOIN link_types lt ON lt.id = l.type_id
+                          WHERE l.inward_issue_id = ${src}${phrase ? ` AND lower(lt.inward) = ${phrase}` : ''})`;
+          return `i.id ${op === 'in' ? 'IN' : 'NOT IN'} ${sub}`;
+        }
         if (['<', '<=', '>', '>='].includes(op)) {
           const k = lit(values[0]).toUpperCase().split('-');
           return `(p.key = ${P(k[0])} AND i.number ${op} ${P(Number(k[1]))})`;

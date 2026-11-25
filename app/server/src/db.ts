@@ -71,4 +71,10 @@ async function migrate(db: Db) {
       ('Highest',1,'#c9372c'),('High',2,'#e2483d'),('Medium',3,'#e2b203'),('Low',4,'#2898bd'),('Lowest',5,'#1d7afc')
      ON CONFLICT (name) DO NOTHING`,
   );
+  await db.query(
+    `INSERT INTO link_types (name, outward, inward) VALUES
+      ('Blocks','blocks','is blocked by'),('Cloners','clones','is cloned by'),
+      ('Duplicate','duplicates','is duplicated by'),('Relates','relates to','relates to')
+     ON CONFLICT (name) DO NOTHING`,
+  );
 }

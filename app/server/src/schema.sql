@@ -175,6 +175,43 @@ CREATE TABLE IF NOT EXISTS sprint_scope (
 );
 CREATE INDEX IF NOT EXISTS sprint_scope_sprint ON sprint_scope(sprint_id);
 
+-- ---------------------------------------------------------------- Phase 3: links + attachments
+
+-- Global link types observed on the Jira site (JIRA_REQUIREMENTS §2.1). "A blocks B": A = outward, B = inward.
+CREATE TABLE IF NOT EXISTS link_types (
+  id        SERIAL PRIMARY KEY,
+  name      TEXT NOT NULL UNIQUE,
+  outward   TEXT NOT NULL,
+  inward    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS issue_links (
+  id                SERIAL PRIMARY KEY,
+  type_id           INT NOT NULL REFERENCES link_types(id),
+  outward_issue_id  INT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+  inward_issue_id   INT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+  created_by        INT NOT NULL REFERENCES users(id),
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (type_id, outward_issue_id, inward_issue_id),
+  CHECK (outward_issue_id <> inward_issue_id)
+);
+CREATE INDEX IF NOT EXISTS issue_links_out ON issue_links(outward_issue_id);
+CREATE INDEX IF NOT EXISTS issue_links_in ON issue_links(inward_issue_id);
+
+-- File bytes live outside the DB (ATTACHMENTS_DIR); the row keeps metadata + content hash.
+CREATE TABLE IF NOT EXISTS attachments (
+  id           SERIAL PRIMARY KEY,
+  issue_id     INT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+  author_id    INT NOT NULL REFERENCES users(id),
+  filename     TEXT NOT NULL,
+  mime_type    TEXT NOT NULL,
+  size         BIGINT NOT NULL,
+  sha256       TEXT NOT NULL,
+  storage_key  TEXT NOT NULL UNIQUE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS attachments_issue ON attachments(issue_id);
+
 CREATE TABLE IF NOT EXISTS recent_views (
   user_id      INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   entity_type  TEXT NOT NULL,

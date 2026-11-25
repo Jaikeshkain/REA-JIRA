@@ -99,6 +99,11 @@ export async function seed(db: Db) {
       ]);
     }
     await q.query(`UPDATE issues SET sprint_id = $1 WHERE id = $2`, [s2.id, ids[7]]);
+    // ---- Phase 3 demo links: the login bug blocks notifications; history relates to wallet work
+    const lt = Object.fromEntries((await q.query(`SELECT id, name FROM link_types`)).map((x) => [x.name, x.id]));
+    await q.query(`INSERT INTO issue_links (type_id, outward_issue_id, inward_issue_id, created_by) VALUES ($1,$2,$3,$4),($5,$6,$7,$4)`, [
+      lt.Blocks, ids[10], ids[5], admin.id, lt.Relates, ids[7], ids[6],
+    ]);
     // DEMO-12 finished on day 2 so the burndown has a step
     await q.query(`UPDATE issues SET resolved_at = $1 WHERE id = $2`, [new Date(start.getTime() + 2 * day).toISOString(), ids[11]]);
     await q.query(`INSERT INTO comments (issue_id, author_id, body) VALUES ($1,$2,$3)`, [

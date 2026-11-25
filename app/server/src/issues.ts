@@ -9,6 +9,8 @@ import { sanitizeAdf, adfToText } from './adf.js';
 import { rankBetween } from './lexorank.js';
 import { parse, compile, FROM } from './jql.js';
 import { setIssueSprint } from './sprints.js';
+import { linksFor } from './links.js';
+import { attachmentsFor, type FileStore } from './attachments.js';
 
 // ------------------------------------------------------------------ shaping
 
@@ -149,7 +151,7 @@ const FieldEdit = z.object({ operation: z.enum(['SET', 'ADD', 'REMOVE']).default
 
 // ------------------------------------------------------------------ routes
 
-export function issueRoutes(db: Db) {
+export function issueRoutes(db: Db, store: FileStore) {
   const r = Router();
 
   /** Create: whole field map at once, reporter + watcher default to creator (observed in Jira, §8.1). */
@@ -266,6 +268,12 @@ export function issueRoutes(db: Db) {
       );
       if (expand.includes('transitions')) out.transitions = (await transitionsFor(db, row.project_id, row.status_id)).map(trJson);
       if (expand.includes('changelog')) out.changelog = await changelogFor(db, row.id);
+      out.fields.issuelinks = await linksFor(db, user, row.id);
+      out.fields.attachment = await attachmentsFor(db, row.id);
+      out.permissions.LINK_ISSUES = can(role, 'LINK_ISSUES', user.isSiteAdmin);
+      out.permissions.CREATE_ATTACHMENTS = can(role, 'CREATE_ATTACHMENTS', user.isSiteAdmin);
+      out.permissions.DELETE_OWN_ATTACHMENTS = can(role, 'DELETE_OWN_ATTACHMENTS', user.isSiteAdmin);
+      out.permissions.DELETE_ALL_ATTACHMENTS = can(role, 'DELETE_ALL_ATTACHMENTS', user.isSiteAdmin);
       if (req.query.updateHistory !== 'false') {
         await db.query(
           `INSERT INTO recent_views (user_id, entity_type, entity_id) VALUES ($1,'issue',$2)
@@ -456,10 +464,15 @@ export function issueRoutes(db: Db) {
       if (!can(role, 'DELETE_ISSUES', user.isSiteAdmin)) throw forbidden('DELETE_ISSUES');
       const [{ n }] = await db.query(`SELECT count(*)::int AS n FROM issues WHERE parent_id = $1`, [row.id]);
       if (n > 0 && req.query.deleteSubtasks !== 'true') throw bad(`${row.key} has ${n} child issue(s); pass deleteSubtasks=true`);
-      await db.tx(async (q) => {
+      const files = await db.tx(async (q) => {
+        const keys = (
+          await q.query(`SELECT storage_key FROM attachments WHERE issue_id IN (SELECT id FROM issues WHERE id = $1 OR parent_id = $1)`, [row.id])
+        ).map((a) => a.storage_key as string);
         await q.query(`DELETE FROM issues WHERE parent_id = $1`, [row.id]);
         await q.query(`DELETE FROM issues WHERE id = $1`, [row.id]);
+        return keys;
       });
+      await store.remove(files); // after commit: rows are gone, so the bytes can go too
       res.status(204).end();
       return undefined;
     }),

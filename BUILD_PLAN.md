@@ -53,6 +53,12 @@ Sprints feature toggle, backlog with drag planning, start/complete sprint (carry
 sprint report with burndown, velocity, Sprint field, sprint JQL. Scope changes are logged in `sprint_scope`
 (committed vs added vs removed) so reports stay correct after the sprint closes.
 
-## Later (Phase 3+)
-Custom fields, workflow designer with conditions, saved filters, dashboards, attachments, notifications/email,
-automation, real-time updates, SSO, Timeline (start/due dates are already stored).
+## Phase 3 — part 1 done: issue links + attachments
+Jira link types and phrases, links UI with History on both ends, `linkedIssues()` JQL; attachments on disk with
+thumbnails/preview, sandboxed downloads, size limit, cleanup on delete.
+
+## Queued (Phase 3, remaining)
+1. Saved filters + dashboards (gadgets: filter results, pie by field, created vs resolved, assigned to me)
+2. Custom fields + workflow editor (statuses/transitions, "field required" rule)
+3. Notifications (in-app bell: assigned, @mention, comments/status on watched issues) + Timeline view
+4. Later: automation, real-time updates, email, SSO

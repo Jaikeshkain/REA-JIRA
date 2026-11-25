@@ -28,6 +28,8 @@ export interface Issue {
     updated: string;
     watches: { watchCount: number; isWatching?: boolean };
     sprint: { id: string; name: string; state: SprintState } | null;
+    issuelinks?: IssueLink[];
+    attachment?: Attachment[];
   };
   children?: Issue[];
   transitions?: Transition[];
@@ -43,6 +45,13 @@ export interface Project {
   issueTypes: IssueType[]; statuses: (Status & { position: number })[]; members: User[]; myRole: string | null; myPermissions: string[];
   features: { sprints: boolean };
 }
+export interface LinkType { id: string; name: string; inward: string; outward: string }
+export interface LinkedIssue {
+  id: string; key: string;
+  fields: { summary: string; status: Pick<Status, 'name' | 'statusCategory'>; issuetype: { name: string; color: string }; priority: { name: string; color: string } | null };
+}
+export interface IssueLink { id: string; type: LinkType; relation: string; inwardIssue?: LinkedIssue; outwardIssue?: LinkedIssue }
+export interface Attachment { id: string; filename: string; mimeType: string; size: number; created: string; author: User; content: string; isImage: boolean }
 export type SprintState = 'future' | 'active' | 'closed';
 export interface Sprint { id: string; name: string; goal: string; state: SprintState; startDate: string | null; endDate: string | null; completeDate: string | null }
 export interface BacklogData {
@@ -136,6 +145,34 @@ export const api = {
   editComment: (key: string, id: string, body: Adf | string) => call<Comment>('PUT', `/issue/${key}/comment/${id}`, { body }),
   deleteComment: (key: string, id: string) => call('DELETE', `/issue/${key}/comment/${id}`),
   watch: (key: string, on: boolean) => call(on ? 'POST' : 'DELETE', `/issue/${key}/watchers`, on ? {} : undefined),
+  linkTypes: () => call<{ issueLinkTypes: LinkType[] }>('GET', '/issueLinkType'),
+  createLink: (type: string, outwardKey: string, inwardKey: string) =>
+    call<{ id: string }>('POST', '/issueLink', { type: { name: type }, outwardIssue: { key: outwardKey }, inwardIssue: { key: inwardKey } }),
+  deleteLink: (id: string) => call('DELETE', `/issueLink/${id}`),
+  deleteAttachment: (id: string) => call('DELETE', `/attachment/${id}`),
+  /** Raw-body upload; the server stores bytes as-is (max size enforced server-side). */
+  uploadAttachment: async (key: string, file: File) => {
+    const res = await fetch(`/api/issue/${key}/attachments`, {
+      method: 'POST',
+      body: file,
+      headers: {
+        'content-type': file.type || 'application/octet-stream',
+        'x-file-name': encodeURIComponent(file.name),
+        ...(session.token ? { authorization: `Bearer ${session.token}` } : {}),
+      },
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new ApiError(res.status, data?.errorMessages?.[0] ?? `Upload failed (${res.status})`);
+    return data as Attachment[];
+  },
+  /** Attachment bytes need the auth header, so fetch them as a blob for thumbnails/downloads. */
+  attachmentBlob: async (a: Attachment, download = false) => {
+    const res = await fetch(`${a.content}${download ? '?download=true' : ''}`, {
+      headers: session.token ? { authorization: `Bearer ${session.token}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, 'Could not load attachment');
+    return res.blob();
+  },
   search: (jql: string, startAt = 0, maxResults = 50) => call<SearchResult>('POST', '/search/jql', { jql, startAt, maxResults }),
   recent: () => call<{ issues: Issue[] }>('GET', '/recent'),
 };

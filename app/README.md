@@ -27,7 +27,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (16 checks)
+npm test           # API smoke test on an in-memory database (18 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -59,6 +59,23 @@ npm run build      # type-check server + client, production-build client
 - API: `GET|POST /api/project/:key/sprints`, `PATCH|DELETE /api/sprint/:id`, `POST /api/sprint/:id/start|complete`,
   `GET /api/project/:key/backlog`, `GET /api/sprint/:id/report`, `GET /api/project/:key/velocity`,
   `PATCH /api/project/:key/features`, plus `sprintId` on `POST /api/issue/:key/rank` and `fields.sprint` on create.
+
+## Phase 3 (part 1): links + attachments
+
+- **Linked work items** on the issue page, grouped by phrase as seen from that issue (*blocks* / *is blocked by*,
+  *duplicates* / *is duplicated by*, *clones* / *is cloned by*, *relates to*); add with a type + issue search, remove
+  inline. Each link writes a History entry on **both** issues. No self-links or duplicates (either direction for
+  *relates to*). JQL: `issue in linkedIssues("DEMO-11")`, `issue in linkedIssues("DEMO-6", "is blocked by")`.
+- **Attachments:** drag files onto the section or browse; image thumbnails and preview, other files download.
+  Max 10 MB per file (`MAX_ATTACHMENT_MB`). Files are stored in `server/data/attachments/` (`ATTACHMENTS_DIR`) under random
+  names with a SHA-256 in the DB, and deleted with their issue.
+- **Download safety:** downloads require sign-in and project access; only PNG/JPEG/GIF/WebP are ever shown inline,
+  everything else is forced to download, and every response is sent with `Content-Security-Policy: sandbox` and
+  `nosniff`, so an uploaded HTML or SVG file cannot run scripts in the app.
+- Permissions: `LINK_ISSUES`, `CREATE_ATTACHMENTS`, `DELETE_OWN_ATTACHMENTS` (members), `DELETE_ALL_ATTACHMENTS` (admins).
+- API: `GET /api/issueLinkType`, `POST /api/issueLink`, `DELETE /api/issueLink/:id`,
+  `POST /api/issue/:key/attachments` (raw body + `X-File-Name`), `GET /api/attachment/:id/content`, `DELETE /api/attachment/:id`;
+  `fields.issuelinks` and `fields.attachment` on `GET /api/issue/:key`.
 
 The demo space starts with **DEMO Sprint 1** active (day 5 of 14, one item done) and **DEMO Sprint 2** planned.
 After upgrading from Phase 1, existing data keeps working (schema migrates in place); delete `server/data/` to get the

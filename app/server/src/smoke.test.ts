@@ -9,6 +9,10 @@ import { buildApp } from './app.js';
 import { seed, DEMO_USERS } from './seed.js';
 import { rankBetween, initialRanks } from './lexorank.js';
 import { parse } from './jql.js';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { cleanFilename } from './attachments.js';
 
 let passed = 0;
 const test = async (name: string, fn: () => Promise<void> | void) => {
@@ -45,7 +49,8 @@ await test('jql parses precedence and ORDER BY', () => {
 console.log('api');
 const db = await openDb({ dataDir: 'memory://' });
 await seed(db);
-const server = buildApp(db).listen(0);
+const attachDir = await mkdtemp(join(tmpdir(), 'tracker-attach-'));
+const server = buildApp(db, { attachmentsDir: attachDir }).listen(0);
 const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
 
 const call = async (token: string | null, method: string, path: string, body?: unknown) => {
@@ -267,6 +272,77 @@ try {
     assert.equal((await call(dev, 'DELETE', `/sprint/${future.id}`)).status, 400); // active sprint can't be deleted
   });
 
+  await test('links: create both directions, phrases, duplicates, JQL, delete', async () => {
+    const types = (await call(dev, 'GET', '/issueLinkType')).body.issueLinkTypes.map((t: any) => t.name);
+    assert.deepEqual(types, ['Blocks', 'Cloners', 'Duplicate', 'Relates']);
+    // seeded: DEMO-11 blocks DEMO-6
+    const six = (await call(dev, 'GET', '/issue/DEMO-6')).body.fields.issuelinks;
+    assert.equal(six[0].relation, 'is blocked by');
+    assert.equal(six[0].outwardIssue.key, 'DEMO-11');
+    const mk = (type: string, out: string, inn: string, t = dev) =>
+      call(t, 'POST', '/issueLink', { type: { name: type }, outwardIssue: { key: out }, inwardIssue: { key: inn } });
+    const r = await mk('Duplicate', 'DEMO-9', 'DEMO-8');
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal((await mk('Duplicate', 'DEMO-9', 'DEMO-8')).status, 400, 'no duplicate link');
+    assert.equal((await mk('Relates', 'DEMO-7', 'DEMO-8')).status, 400, 'symmetric type: reverse already exists');
+    assert.equal((await mk('Blocks', 'DEMO-9', 'DEMO-9')).status, 400, 'no self link');
+    assert.equal((await mk('Blocks', 'DEMO-9', 'DEMO-6', viewer)).status, 403);
+    const eight = (await call(dev, 'GET', '/issue/DEMO-8?expand=changelog')).body;
+    assert.ok(eight.fields.issuelinks.some((l: any) => l.relation === 'is duplicated by' && l.outwardIssue.key === 'DEMO-9'));
+    assert.ok(eight.changelog.some((c: any) => c.items[0].field === 'Link' && c.items[0].toString === 'This issue is duplicated by DEMO-9'));
+    const q = async (jql: string) => (await call(admin, 'POST', '/search/jql', { jql })).body;
+    assert.deepEqual((await q('issue in linkedIssues("DEMO-11")')).issues.map((i: any) => i.key), ['DEMO-6']);
+    assert.equal((await q('issue in linkedIssues("DEMO-6", "is blocked by")')).total, 1);
+    assert.equal((await q('issue in linkedIssues("DEMO-6", "blocks")')).total, 0);
+    assert.equal((await call(dev, 'DELETE', `/issueLink/${r.body.id}`)).status, 204);
+    assert.ok(!(await call(dev, 'GET', '/issue/DEMO-8')).body.fields.issuelinks.some((l: any) => l.type.name === 'Duplicate'));
+  });
+
+  await test('attachments: upload, list, download headers, permissions, limits, cleanup', async () => {
+    const up = (t: string, key: string, name: string, type: string, body: Buffer | string) =>
+      fetch(`${base}/issue/${key}/attachments`, {
+        method: 'POST', body: typeof body === 'string' ? body : new Uint8Array(body), headers: { authorization: `Bearer ${t}`, 'content-type': type, 'x-file-name': encodeURIComponent(name) },
+      });
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+    let res = await up(dev, 'DEMO-9', 'screen shot.png', 'image/png', png);
+    assert.equal(res.status, 201);
+    const [img] = await res.json();
+    assert.equal(img.filename, 'screen shot.png');
+    assert.equal(img.isImage, true);
+    // a JSON file must be stored as bytes, not parsed by the JSON middleware
+    res = await up(dev, 'DEMO-9', '../../etc/config.json', 'application/json', '{"a":1}');
+    const [jsonFile] = await res.json();
+    assert.equal(jsonFile.filename, 'config.json', 'path components stripped');
+    assert.equal(jsonFile.size, 7);
+    // HTML is never served inline, always sandboxed
+    res = await up(dev, 'DEMO-9', 'x.html', 'text/html', '<script>alert(1)</script>');
+    const [html] = await res.json();
+    const dl = await fetch(`${base}/attachment/${html.id}/content`, { headers: { authorization: `Bearer ${dev}` } });
+    assert.equal(dl.headers.get('content-type'), 'application/octet-stream');
+    assert.match(dl.headers.get('content-disposition')!, /^attachment;/);
+    assert.match(dl.headers.get('content-security-policy')!, /sandbox/);
+    assert.equal(dl.headers.get('x-content-type-options'), 'nosniff');
+    const imgDl = await fetch(`${base}/attachment/${img.id}/content`, { headers: { authorization: `Bearer ${viewer}` } });
+    assert.equal(imgDl.headers.get('content-type'), 'image/png');
+    assert.deepEqual(Buffer.from(await imgDl.arrayBuffer()), png);
+    // permissions
+    assert.equal((await up(viewer, 'DEMO-9', 'a.txt', 'text/plain', 'x')).status, 403);
+    assert.equal((await up(dev, 'DEMO-9', 'empty.txt', 'text/plain', '')).status, 400);
+    assert.equal((await up(dev, 'DEMO-9', 'big.bin', 'application/octet-stream', Buffer.alloc(11 * 1024 * 1024))).status, 413);
+    assert.equal((await call(viewer, 'DELETE', `/attachment/${img.id}`)).status, 403);
+    const listed = (await call(dev, 'GET', '/issue/DEMO-9')).body.fields.attachment;
+    assert.equal(listed.length, 3);
+    assert.equal((await call(dev, 'DELETE', `/attachment/${html.id}`)).status, 204);
+    assert.equal((await readdir(attachDir)).length, 2);
+    // a stranger cannot read the bytes
+    const reg = await call(null, 'POST', '/auth/register', { email: 'peek@tracker.test', displayName: 'Peek', password: 'longenough1' });
+    assert.equal((await fetch(`${base}/attachment/${img.id}/content`, { headers: { authorization: `Bearer ${reg.body.token}` } })).status, 404);
+    // deleting the issue removes its files
+    assert.equal((await call(admin, 'DELETE', '/issue/DEMO-9')).status, 204);
+    assert.equal((await readdir(attachDir)).length, 0);
+    assert.equal(cleanFilename('..\\..\\a\u0000b.txt'), 'ab.txt');
+  });
+
   await test('recently viewed list', async () => {
     await call(admin, 'GET', '/issue/DEMO-2');
     const r = (await call(admin, 'GET', '/recent')).body;
@@ -277,4 +353,5 @@ try {
 } finally {
   server.close();
   await db.close();
+  await rm(attachDir, { recursive: true, force: true });
 }

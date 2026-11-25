@@ -32,6 +32,12 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     res.status(err.status).json({ errorMessages: [err.message], errors: err.details ?? {} });
     return;
   }
+  // body-parser errors carry a 4xx status (413 too large, 400 malformed JSON)
+  const status = (err as { status?: number })?.status;
+  if (status && status >= 400 && status < 500) {
+    res.status(status).json({ errorMessages: [status === 413 ? 'File or request is too large' : 'Malformed request body'] });
+    return;
+  }
   console.error(err);
   res.status(500).json({ errorMessages: ['Internal server error'] });
 }
