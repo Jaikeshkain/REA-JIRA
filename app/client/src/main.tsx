@@ -11,6 +11,8 @@ import { IssuePage } from './pages/IssuePage';
 import { Search } from './pages/Search';
 import { Backlog } from './pages/Backlog';
 import { Reports } from './pages/Reports';
+import { Filters } from './pages/Filters';
+import { DashboardList, DashboardView } from './pages/Dashboards';
 
 function App() {
   const { user, ready } = useAuth();
@@ -34,6 +36,9 @@ function App() {
         </Route>
         <Route path="/browse/:key" element={<IssuePage />} />
         <Route path="/issues" element={<Search />} />
+        <Route path="/filters" element={<Filters />} />
+        <Route path="/dashboards" element={<DashboardList />} />
+        <Route path="/dashboards/:id" element={<DashboardView />} />
         <Route path="*" element={<div className="page"><h1>Page not found</h1></div>} />
       </Route>
     </Routes>

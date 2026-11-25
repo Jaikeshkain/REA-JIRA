@@ -27,7 +27,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (18 checks)
+npm test           # API smoke test on an in-memory database (20 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -76,6 +76,25 @@ npm run build      # type-check server + client, production-build client
 - API: `GET /api/issueLinkType`, `POST /api/issueLink`, `DELETE /api/issueLink/:id`,
   `POST /api/issue/:key/attachments` (raw body + `X-File-Name`), `GET /api/attachment/:id/content`, `DELETE /api/attachment/:id`;
   `fields.issuelinks` and `fields.attachment` on `GET /api/issue/:key`.
+
+## Phase 3 (part 2): saved filters + dashboards
+
+- **Saved filters:** run a JQL search → *Save filter* (name, description, who can see it: private / members of a
+  space / everyone on the site). Open with `/issues?filter=ID`; owners get *Save changes* when the JQL is edited and a
+  *Details* dialog; anyone can *Save as*. JQL is validated on save. **Filters** page: All / Starred / My filters,
+  star toggle (creators star automatically), owner-only delete.
+- **Dashboards:** two-column layouts, private / space / site sharing, owner-only editing (*Edit* → add, configure,
+  move ↑ ↓ ← →, remove gadgets). New dashboards start with *Assigned to me*.
+- **Gadgets** (Jira equivalents): *Filter results*, *Breakdown* (Jira's "Pie chart", drawn as ranked bars so values
+  compare exactly; top 10 + Other), *Created vs. resolved* (7–90 days), *Assigned to me*.
+- **Viewer-scoped data:** gadgets and shared filters are always computed with the viewer's own permissions, so
+  sharing never exposes work someone couldn't already browse. A gadget whose filter is deleted or unshared shows
+  "unavailable" instead of breaking the dashboard.
+- API: `GET /api/filter/search?scope=all|mine|starred`, `POST /api/filter`, `GET|PUT|DELETE /api/filter/:id`,
+  `POST|DELETE /api/filter/:id/favourite`; `GET|POST /api/dashboard`, `GET|PUT|DELETE /api/dashboard/:id`,
+  `POST /api/dashboard/:id/gadgets`, `PUT|DELETE /api/dashboard/:id/gadgets/:gid`, `GET /api/dashboard/:id/gadgets/:gid/data`.
+
+The demo site also has three shared filters and a **DEMO team dashboard** with all four gadget types.
 
 The demo space starts with **DEMO Sprint 1** active (day 5 of 14, one item done) and **DEMO Sprint 2** planned.
 After upgrading from Phase 1, existing data keeps working (schema migrates in place); delete `server/data/` to get the

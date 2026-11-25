@@ -57,8 +57,11 @@ sprint report with burndown, velocity, Sprint field, sprint JQL. Scope changes a
 Jira link types and phrases, links UI with History on both ends, `linkedIssues()` JQL; attachments on disk with
 thumbnails/preview, sandboxed downloads, size limit, cleanup on delete.
 
+## Phase 3 — part 2 done: saved filters + dashboards
+Filters with private/space/site sharing and stars; dashboards with 4 gadget types, owner-only layout editing,
+viewer-scoped gadget data. (Filter email subscriptions need email delivery — deferred with notifications.)
+
 ## Queued (Phase 3, remaining)
-1. Saved filters + dashboards (gadgets: filter results, pie by field, created vs resolved, assigned to me)
-2. Custom fields + workflow editor (statuses/transitions, "field required" rule)
-3. Notifications (in-app bell: assigned, @mention, comments/status on watched issues) + Timeline view
-4. Later: automation, real-time updates, email, SSO
+1. Custom fields + workflow editor (statuses/transitions, "field required" rule)
+2. Notifications (in-app bell: assigned, @mention, comments/status on watched issues) + Timeline view
+3. Later: automation, real-time updates, email (+ filter subscriptions), SSO

@@ -75,7 +75,9 @@ export function Layout() {
         </header>
         <nav className="sidebar" aria-label="Sidebar">
           <NavLink to="/for-you" className="side-link">For you</NavLink>
-          <NavLink to="/issues" className="side-link">Search &amp; filters</NavLink>
+          <NavLink to="/issues" end className="side-link">Search</NavLink>
+          <NavLink to="/filters" className="side-link">Filters</NavLink>
+          <NavLink to="/dashboards" className="side-link">Dashboards</NavLink>
           <NavLink to="/projects" end className="side-link">Spaces</NavLink>
           <div className="side-group">
             {projects.map((p) => (

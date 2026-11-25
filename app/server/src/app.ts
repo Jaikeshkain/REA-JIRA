@@ -9,6 +9,8 @@ import { sprintRoutes } from './sprints.js';
 import { linkRoutes } from './links.js';
 import { attachmentRoutes, FileStore } from './attachments.js';
 import { errorHandler } from './http.js';
+import { filterRoutes } from './filters.js';
+import { dashboardRoutes } from './dashboards.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -31,6 +33,8 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string } = {}) {
     sprintRoutes(db),
     linkRoutes(db),
     attachmentRoutes(db, store),
+    filterRoutes(db),
+    dashboardRoutes(db),
   );
   app.use('/api', (_req, res) => {
     res.status(404).json({ errorMessages: ['Not found'] });

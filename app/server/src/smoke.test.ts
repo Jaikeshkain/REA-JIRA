@@ -343,6 +343,84 @@ try {
     assert.equal(cleanFilename('..\\..\\a\u0000b.txt'), 'ab.txt');
   });
 
+  await test('filters: save, validate, share scopes, ownership, favourites', async () => {
+    const seeded = (await call(dev, 'GET', '/filter/search')).body.values.map((f: any) => f.name);
+    assert.deepEqual(seeded, ['DEMO all work', 'DEMO open work', 'Open bugs']);
+    const mk = (body: object, t = dev) => call(t, 'POST', '/filter', body);
+    const f = await mk({ name: 'My bugs', jql: 'type = Bug AND assignee = currentUser()' });
+    assert.equal(f.status, 201, JSON.stringify(f.body));
+    assert.equal(f.body.favourite, true, 'creator stars it');
+    assert.equal(f.body.share.type, 'private');
+    assert.equal((await mk({ name: 'my BUGS', jql: 'type = Bug' })).status, 400, 'duplicate name per owner');
+    assert.equal((await mk({ name: 'Broken', jql: 'nonsense = 1' })).status, 400, 'JQL validated');
+    assert.equal((await mk({ name: 'P', jql: 'type = Bug', share: 'project' })).status, 400, 'project share needs a space');
+    // private → invisible to others
+    assert.equal((await call(viewer, 'GET', `/filter/${f.body.id}`)).status, 404);
+    // project share → DEMO members only
+    await call(dev, 'PUT', `/filter/${f.body.id}`, { share: 'project', projectKey: 'DEMO' });
+    assert.equal((await call(viewer, 'GET', `/filter/${f.body.id}`)).status, 200);
+    const out = await call(null, 'POST', '/auth/register', { email: 'out2@tracker.test', displayName: 'Out Two', password: 'longenough1' });
+    assert.equal((await call(out.body.token, 'GET', `/filter/${f.body.id}`)).status, 404);
+    // only the owner edits/deletes
+    assert.equal((await call(viewer, 'PUT', `/filter/${f.body.id}`, { name: 'hijack' })).status, 403);
+    assert.equal((await call(viewer, 'DELETE', `/filter/${f.body.id}`)).status, 403);
+    // favourites
+    await call(viewer, 'POST', `/filter/${f.body.id}/favourite`);
+    const starred = (await call(viewer, 'GET', '/filter/search?scope=starred')).body.values;
+    assert.deepEqual(starred.map((x: any) => x.name), ['My bugs']);
+    assert.equal(starred[0].favouriteCount, 2);
+    await call(viewer, 'DELETE', `/filter/${f.body.id}/favourite`);
+    assert.equal((await call(viewer, 'GET', '/filter/search?scope=starred')).body.values.length, 0);
+    assert.deepEqual((await call(dev, 'GET', '/filter/search?scope=mine')).body.values.map((x: any) => x.name), ['My bugs']);
+  });
+
+  await test('dashboards: gadgets data per viewer, layout, ownership, broken filter', async () => {
+    const list = (await call(dev, 'GET', '/dashboard')).body.dashboards;
+    const team = list.find((d: any) => d.name === 'DEMO team dashboard');
+    assert.ok(team && !team.editable, 'shared dashboard visible, not editable by non-owner');
+    const full = (await call(dev, 'GET', `/dashboard/${team.id}`)).body;
+    assert.equal(full.gadgets.length, 5);
+    const data = async (t: string, dashId: string, gid: string) => (await call(t, 'GET', `/dashboard/${dashId}/gadgets/${gid}/data`)).body;
+    const byType = (type: string) => full.gadgets.filter((g: any) => g.type === type);
+    const results = await data(dev, team.id, byType('filter-results')[0].id);
+    assert.ok(results.total > 0 && results.issues.length <= 8);
+    assert.equal(results.issues[0].fields.priority.name, 'Highest', 'filter ORDER BY honoured');
+    const status = await data(dev, team.id, byType('breakdown')[0].id);
+    assert.equal(status.groups.reduce((n: number, g: any) => n + g.count, 0), status.total);
+    const cvr = await data(dev, team.id, byType('created-vs-resolved')[0].id);
+    assert.equal(cvr.series.length, 14);
+    assert.ok(cvr.totals.created > 0);
+    const mine = await data(dev, team.id, byType('assigned-to-me')[0].id);
+    assert.ok(mine.issues.every((i: any) => i.fields.assignee.displayName === 'Dana Dev'));
+    // an outsider can open the site dashboard but sees no DEMO issues in it
+    const out = (await call(null, 'POST', '/auth/login', { email: 'out2@tracker.test', password: 'longenough1' })).body.token;
+    assert.equal((await data(out, team.id, byType('breakdown')[0].id)).total, 0);
+    // non-owners cannot change it
+    assert.equal((await call(dev, 'POST', `/dashboard/${team.id}/gadgets`, { type: 'assigned-to-me', config: {} })).status, 403);
+    assert.equal((await call(dev, 'DELETE', `/dashboard/${team.id}`)).status, 403);
+
+    // own dashboard: starts with Assigned to me; add, configure, move, remove
+    const d = await call(dev, 'POST', '/dashboard', { name: 'Dana board' });
+    assert.equal(d.status, 201);
+    let mineDash = (await call(dev, 'GET', `/dashboard/${d.body.id}`)).body;
+    assert.deepEqual(mineDash.gadgets.map((g: any) => g.type), ['assigned-to-me']);
+    const myFilter = (await call(dev, 'GET', '/filter/search?scope=mine')).body.values[0];
+    assert.equal((await call(dev, 'POST', `/dashboard/${d.body.id}/gadgets`, { type: 'pie', config: {} })).status, 400);
+    assert.equal((await call(dev, 'POST', `/dashboard/${d.body.id}/gadgets`, { type: 'breakdown', config: { filterId: myFilter.id, field: 'colour' } })).status, 400);
+    const g = await call(dev, 'POST', `/dashboard/${d.body.id}/gadgets`, { type: 'breakdown', column: 1, config: { filterId: myFilter.id, field: 'priority' } });
+    assert.equal(g.status, 201);
+    await call(dev, 'PUT', `/dashboard/${d.body.id}/gadgets/${g.body.id}`, { column: 0, position: 0, config: { field: 'labels' } });
+    mineDash = (await call(dev, 'GET', `/dashboard/${d.body.id}`)).body;
+    assert.deepEqual(mineDash.gadgets.map((x: any) => [x.type, x.column, x.position]), [['breakdown', 0, 0], ['assigned-to-me', 0, 1]]);
+    assert.equal(mineDash.gadgets[0].config.field, 'labels');
+    // deleting the filter leaves the gadget in place but marks it unavailable
+    await call(dev, 'DELETE', `/filter/${myFilter.id}`);
+    assert.match((await data(dev, d.body.id, g.body.id)).unavailable, /deleted or is not shared/);
+    // private dashboard invisible to others
+    assert.equal((await call(viewer, 'GET', `/dashboard/${d.body.id}`)).status, 404);
+    assert.equal((await call(dev, 'DELETE', `/dashboard/${d.body.id}`)).status, 204);
+  });
+
   await test('recently viewed list', async () => {
     await call(admin, 'GET', '/issue/DEMO-2');
     const r = (await call(admin, 'GET', '/recent')).body;

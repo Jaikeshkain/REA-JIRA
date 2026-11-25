@@ -52,6 +52,20 @@ export interface LinkedIssue {
 }
 export interface IssueLink { id: string; type: LinkType; relation: string; inwardIssue?: LinkedIssue; outwardIssue?: LinkedIssue }
 export interface Attachment { id: string; filename: string; mimeType: string; size: number; created: string; author: User; content: string; isImage: boolean }
+export type ShareType = 'private' | 'project' | 'site';
+export interface Share { type: ShareType; project: { key: string; name: string } | null }
+export interface SavedFilter {
+  id: string; name: string; description: string; jql: string; owner: User; share: Share;
+  favourite: boolean; favouriteCount: number; editable: boolean; updated: string;
+}
+export type GadgetType = 'filter-results' | 'breakdown' | 'created-vs-resolved' | 'assigned-to-me';
+export interface Gadget { id: string; type: GadgetType; column: number; position: number; config: Record<string, any> }
+export interface Dashboard { id: string; name: string; description: string; owner: User; share: Share; editable: boolean; updated: string; gadgets?: Gadget[] }
+export type GadgetData =
+  | { unavailable: string }
+  | { source: { id: string; name: string; jql: string } | null; jql: string; total: number; issues: Issue[] }
+  | { source: { id: string; name: string }; field: string; total: number; groups: { name: string; count: number }[] }
+  | { source: { id: string; name: string }; days: number; totals: { created: number; resolved: number }; series: { date: string; created: number; resolved: number }[] };
 export type SprintState = 'future' | 'active' | 'closed';
 export interface Sprint { id: string; name: string; goal: string; state: SprintState; startDate: string | null; endDate: string | null; completeDate: string | null }
 export interface BacklogData {
@@ -145,6 +159,25 @@ export const api = {
   editComment: (key: string, id: string, body: Adf | string) => call<Comment>('PUT', `/issue/${key}/comment/${id}`, { body }),
   deleteComment: (key: string, id: string) => call('DELETE', `/issue/${key}/comment/${id}`),
   watch: (key: string, on: boolean) => call(on ? 'POST' : 'DELETE', `/issue/${key}/watchers`, on ? {} : undefined),
+  filters: (scope: 'all' | 'mine' | 'starred' = 'all') => call<{ values: SavedFilter[] }>('GET', `/filter/search?scope=${scope}`),
+  filter: (id: string) => call<SavedFilter>('GET', `/filter/${id}`),
+  createFilter: (body: { name: string; description?: string; jql: string; share: ShareType; projectKey?: string | null }) =>
+    call<SavedFilter>('POST', '/filter', body),
+  updateFilter: (id: string, body: Partial<{ name: string; description: string; jql: string; share: ShareType; projectKey: string | null }>) =>
+    call<SavedFilter>('PUT', `/filter/${id}`, body),
+  deleteFilter: (id: string) => call('DELETE', `/filter/${id}`),
+  favouriteFilter: (id: string, on: boolean) => call(on ? 'POST' : 'DELETE', `/filter/${id}/favourite`),
+  dashboards: () => call<{ dashboards: Dashboard[] }>('GET', '/dashboard'),
+  dashboard: (id: string) => call<Dashboard>('GET', `/dashboard/${id}`),
+  createDashboard: (body: { name: string; description?: string; share: ShareType; projectKey?: string | null }) => call<Dashboard>('POST', '/dashboard', body),
+  updateDashboard: (id: string, body: Partial<{ name: string; description: string; share: ShareType; projectKey: string | null }>) =>
+    call<Dashboard>('PUT', `/dashboard/${id}`, body),
+  deleteDashboard: (id: string) => call('DELETE', `/dashboard/${id}`),
+  addGadget: (id: string, body: { type: GadgetType; column: number; config: Record<string, any> }) => call<Gadget>('POST', `/dashboard/${id}/gadgets`, body),
+  updateGadget: (id: string, gid: string, body: { config?: Record<string, any>; column?: number; position?: number }) =>
+    call<Gadget>('PUT', `/dashboard/${id}/gadgets/${gid}`, body),
+  removeGadget: (id: string, gid: string) => call('DELETE', `/dashboard/${id}/gadgets/${gid}`),
+  gadgetData: (id: string, gid: string) => call<GadgetData>('GET', `/dashboard/${id}/gadgets/${gid}/data`),
   linkTypes: () => call<{ issueLinkTypes: LinkType[] }>('GET', '/issueLinkType'),
   createLink: (type: string, outwardKey: string, inwardKey: string) =>
     call<{ id: string }>('POST', '/issueLink', { type: { name: type }, outwardIssue: { key: outwardKey }, inwardIssue: { key: inwardKey } }),

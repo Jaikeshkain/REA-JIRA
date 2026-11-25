@@ -103,6 +103,111 @@ export function BurndownChart({ data, unit = 'pts' }: { data: BurnPoint[]; unit?
   );
 }
 
+/**
+ * Breakdown gadget (Jira's "Pie chart"): ranked horizontal bars in one hue, largest first, value + share on each
+ * row. Bars on one baseline compare more exactly than slices; past 10 parts the tail folds into "Other".
+ */
+export function BreakdownBars({ groups, total }: { groups: { name: string; count: number }[]; total: number }) {
+  const [hover, setHover] = useState<string | null>(null);
+  if (!groups.length) return <p className="muted small">No matching work items.</p>;
+  const top = groups.slice(0, 10);
+  const rest = groups.slice(10).reduce((n, g) => n + g.count, 0);
+  const rows = rest ? [...top, { name: 'Other', count: rest }] : top;
+  const max = Math.max(...rows.map((r) => r.count));
+  return (
+    <figure className="viz">
+      <ul className="hbars" aria-label="Breakdown">
+        {rows.map((r) => {
+          const pct = total ? Math.round((r.count / total) * 100) : 0;
+          return (
+            <li key={r.name} className={hover === r.name ? 'on' : ''} onPointerEnter={() => setHover(r.name)} onPointerLeave={() => setHover(null)}
+              title={`${r.name}: ${r.count} (${pct}%)`}>
+              <span className="hbar-label">{r.name}</span>
+              <span className="hbar-track"><span className="hbar-fill" style={{ width: `${(r.count / max) * 100}%` }} /></span>
+              <span className="hbar-value">{r.count}<span className="muted"> · {pct}%</span></span>
+            </li>
+          );
+        })}
+      </ul>
+      <figcaption className="muted small">{total} work item{total === 1 ? '' : 's'}</figcaption>
+    </figure>
+  );
+}
+
+/** Created vs resolved per day: two lines (slot 1 created, slot 2 resolved), crosshair tooltip, table view. */
+export function CreatedResolvedChart({ series }: { series: { date: string; created: number; resolved: number }[] }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const [table, setTable] = useState(false);
+  const svgRef = useRef<SVGSVGElement>(null);
+  // drawn at gadget size (half-width column) so 11px ticks stay ~11px on screen
+  const Wc = 440, Hc = 220, Rc = 70;
+  const iwc = Wc - M.l - Rc;
+  const ihc = Hc - M.t - M.b;
+  const max = niceMax(Math.max(1, ...series.flatMap((d) => [d.created, d.resolved])));
+  const x = (i: number) => M.l + (series.length <= 1 ? 0 : (i / (series.length - 1)) * iwc);
+  const y = (v: number) => M.t + ihc - (v / max) * ihc;
+  const path = (k: 'created' | 'resolved') => series.map((d, i) => `${i ? 'L' : 'M'}${x(i)},${y(d[k])}`).join(' ');
+  const last = series.length - 1;
+  const h = hover != null ? series[hover] : null;
+  const onMove = (e: React.PointerEvent) => {
+    const r = svgRef.current!.getBoundingClientRect();
+    const i = Math.round(((((e.clientX - r.left) / r.width) * Wc - M.l) / iwc) * (series.length - 1));
+    setHover(i >= 0 && i < series.length ? i : null);
+  };
+  return (
+    <figure className="viz">
+      <div className="viz-head">
+        <ul className="legend" aria-label="Legend">
+          <li><span className="sw line s1" />Created</li>
+          <li><span className="sw line s2" />Resolved</li>
+        </ul>
+        <button className="link-btn" onClick={() => setTable((t) => !t)}>{table ? 'View chart' : 'View as table'}</button>
+      </div>
+      {table ? (
+        <table className="table"><thead><tr><th>Day</th><th>Created</th><th>Resolved</th></tr></thead>
+          <tbody>{series.map((d) => <tr key={d.date}><td>{fmtDay(d.date)}</td><td>{d.created}</td><td>{d.resolved}</td></tr>)}</tbody></table>
+      ) : (
+        <div className="viz-plot">
+          <svg ref={svgRef} viewBox={`0 0 ${Wc} ${Hc}`} role="img" onPointerMove={onMove} onPointerLeave={() => setHover(null)}
+            aria-label={`Created vs resolved over ${series.length} days`}>
+            {ticks(max).map((t) => (
+              <g key={t}>
+                <line className="grid" x1={M.l} x2={M.l + iwc} y1={y(t)} y2={y(t)} />
+                <text className="tick" x={M.l - 8} y={y(t)} dy="0.32em" textAnchor="end">{t}</text>
+              </g>
+            ))}
+            {series.map((d, i) => ((i % Math.ceil(series.length / 4) === 0 && last - i >= series.length / 8) || i === last) && (
+              <text key={d.date} className="tick" x={x(i)} y={Hc - 10} textAnchor="middle">{fmtDay(d.date)}</text>
+            ))}
+            <path className="series s2" d={path('resolved')} />
+            <path className="series s1" d={path('created')} />
+            {last >= 0 && (
+              <>
+                <text className="end-label" x={x(last) + 8} y={y(series[last].created)} dy={series[last].created >= series[last].resolved ? '-0.2em' : '0.9em'}>Created</text>
+                <text className="end-label" x={x(last) + 8} y={y(series[last].resolved)} dy={series[last].created >= series[last].resolved ? '0.9em' : '-0.2em'}>Resolved</text>
+              </>
+            )}
+            {h && hover != null && (
+              <g pointerEvents="none">
+                <line className="crosshair" x1={x(hover)} x2={x(hover)} y1={M.t} y2={M.t + ihc} />
+                <circle className="dot s1" cx={x(hover)} cy={y(h.created)} r={4} />
+                <circle className="dot s2" cx={x(hover)} cy={y(h.resolved)} r={4} />
+              </g>
+            )}
+          </svg>
+          {h && hover != null && (
+            <div className="viz-tip" style={{ left: `${(x(hover) / Wc) * 100}%` }} role="status">
+              <strong>{fmtDay(h.date)}</strong>
+              <div><span className="sw line s1" />Created <b>{h.created}</b></div>
+              <div><span className="sw line s2" />Resolved <b>{h.resolved}</b></div>
+            </div>
+          )}
+        </div>
+      )}
+    </figure>
+  );
+}
+
 export function VelocityChart({ data }: { data: { sprint: { name: string }; committed: number; completed: number }[] }) {
   const [hover, setHover] = useState<number | null>(null);
   const [table, setTable] = useState(false);

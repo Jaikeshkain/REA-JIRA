@@ -104,6 +104,32 @@ export async function seed(db: Db) {
     await q.query(`INSERT INTO issue_links (type_id, outward_issue_id, inward_issue_id, created_by) VALUES ($1,$2,$3,$4),($5,$6,$7,$4)`, [
       lt.Blocks, ids[10], ids[5], admin.id, lt.Relates, ids[7], ids[6],
     ]);
+    // ---- Phase 3 demo: shared filters + a team dashboard
+    const filter = async (name: string, jql: string, description: string) => {
+      const [f] = await q.query(
+        `INSERT INTO filters (tenant_id, owner_id, name, description, jql, share) VALUES ($1,$2,$3,$4,$5,'site') RETURNING id`,
+        [tenant.id, admin.id, name, description, jql],
+      );
+      await q.query(`INSERT INTO filter_favourites (filter_id, user_id) VALUES ($1,$2)`, [f.id, admin.id]);
+      return String(f.id);
+    };
+    const fOpen = await filter('DEMO open work', 'project = DEMO AND statusCategory != Done ORDER BY priority DESC, updated DESC', 'Everything not done in the demo space');
+    const fAll = await filter('DEMO all work', 'project = DEMO ORDER BY created DESC', 'All work items in the demo space');
+    await filter('Open bugs', 'type = Bug AND resolution = Unresolved ORDER BY priority DESC', 'Unresolved bugs across spaces');
+    const [dash] = await q.query(
+      `INSERT INTO dashboards (tenant_id, owner_id, name, description, share) VALUES ($1,$2,'DEMO team dashboard','Status of the demo space','site') RETURNING id`,
+      [tenant.id, admin.id],
+    );
+    const gadgets: [string, number, object][] = [
+      ['filter-results', 0, { filterId: fOpen, max: 8 }],
+      ['created-vs-resolved', 0, { filterId: fAll, days: 14 }],
+      ['breakdown', 1, { filterId: fAll, field: 'status' }],
+      ['breakdown', 1, { filterId: fOpen, field: 'assignee' }],
+      ['assigned-to-me', 1, { max: 5 }],
+    ];
+    for (const [i, [type, col, config]] of gadgets.entries()) {
+      await q.query(`INSERT INTO gadgets (dashboard_id, type, col, position, config) VALUES ($1,$2,$3,$4,$5)`, [dash.id, type, col, i, config]);
+    }
     // DEMO-12 finished on day 2 so the burndown has a step
     await q.query(`UPDATE issues SET resolved_at = $1 WHERE id = $2`, [new Date(start.getTime() + 2 * day).toISOString(), ids[11]]);
     await q.query(`INSERT INTO comments (issue_id, author_id, body) VALUES ($1,$2,$3)`, [

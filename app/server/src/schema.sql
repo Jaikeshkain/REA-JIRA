@@ -212,6 +212,54 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 CREATE INDEX IF NOT EXISTS attachments_issue ON attachments(issue_id);
 
+-- ---------------------------------------------------------------- Phase 3: filters + dashboards
+
+-- share: private (owner only) | project (members of project_id) | site (everyone on the site)
+CREATE TABLE IF NOT EXISTS filters (
+  id           SERIAL PRIMARY KEY,
+  tenant_id    INT NOT NULL REFERENCES tenants(id),
+  owner_id     INT NOT NULL REFERENCES users(id),
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  jql          TEXT NOT NULL,
+  share        TEXT NOT NULL DEFAULT 'private' CHECK (share IN ('private','project','site')),
+  project_id   INT REFERENCES projects(id) ON DELETE CASCADE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, owner_id, name),
+  CHECK (share <> 'project' OR project_id IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS filter_favourites (
+  filter_id  INT NOT NULL REFERENCES filters(id) ON DELETE CASCADE,
+  user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY (filter_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS dashboards (
+  id           SERIAL PRIMARY KEY,
+  tenant_id    INT NOT NULL REFERENCES tenants(id),
+  owner_id     INT NOT NULL REFERENCES users(id),
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  share        TEXT NOT NULL DEFAULT 'private' CHECK (share IN ('private','project','site')),
+  project_id   INT REFERENCES projects(id) ON DELETE CASCADE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (share <> 'project' OR project_id IS NOT NULL)
+);
+
+-- type: filter-results | breakdown | created-vs-resolved | assigned-to-me ; config is type-specific JSON
+CREATE TABLE IF NOT EXISTS gadgets (
+  id            SERIAL PRIMARY KEY,
+  dashboard_id  INT NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE,
+  type          TEXT NOT NULL,
+  col           INT NOT NULL DEFAULT 0 CHECK (col IN (0, 1)),
+  position      INT NOT NULL DEFAULT 0,
+  config        JSONB NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS gadgets_dashboard ON gadgets(dashboard_id, col, position);
+
 CREATE TABLE IF NOT EXISTS recent_views (
   user_id      INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   entity_type  TEXT NOT NULL,
