@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet, useNavigate, useOutletContext, useParams, useSea
 import { api, ApiError, type Issue, type Project, type Sprint, type Status } from '../api';
 import { daysLeft } from './Backlog';
 import { FieldsEditor, WorkflowEditor } from './SettingsEditors';
+import { AutomationEditor } from './Automation';
 import { PageHeader, useShell } from '../Layout';
 import { Avatar, PriorityIcon, StatusLozenge, TypeIcon, fmtDate, timeAgo, useAsync } from '../ui';
 
@@ -330,17 +331,18 @@ export function Settings() {
       setMsg(err instanceof ApiError ? err.message : String(err));
     }
   };
-  const [tab, setTab] = useState<'access' | 'fields' | 'workflow'>('access');
+  const [tab, setTab] = useState<'access' | 'fields' | 'workflow' | 'automation'>('access');
   const tabs = (
     <div className="tabs small" role="tablist" aria-label="Space settings">
-      {(['access', 'fields', 'workflow'] as const).map((t) => (
+      {(['access', 'fields', 'workflow', 'automation'] as const).map((t) => (
         <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>
-          {{ access: 'Access & features', fields: 'Fields', workflow: 'Workflow' }[t]}
+          {{ access: 'Access & features', fields: 'Fields', workflow: 'Workflow', automation: 'Automation' }[t]}
         </button>
       ))}
     </div>
   );
   if (tab === 'fields') return <>{tabs}<FieldsEditor project={project} /></>;
+  if (tab === 'automation') return <>{tabs}<AutomationEditor project={project} /></>;
   if (tab === 'workflow') return <>{tabs}<div className="stack">{<WorkflowEditor project={project} />}</div></>;
   return (
     <>{tabs}

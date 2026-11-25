@@ -83,6 +83,25 @@ export interface AppNotification {
   issue: { key: string; summary: string }; data: { excerpt?: string; from?: string; to?: string; where?: string };
 }
 export interface Inbox { unread: { unread: number; direct: number; watching: number }; items: AppNotification[] }
+export type AutoTrigger =
+  | { type: 'issue_created' }
+  | { type: 'issue_transitioned'; toStatusId?: string | null; fromStatusId?: string | null }
+  | { type: 'field_changed'; field: string }
+  | { type: 'comment_added' };
+export type AutoAction =
+  | { type: 'transition'; statusId: string }
+  | { type: 'assign'; to: string }
+  | { type: 'set_field'; field: string; value: any }
+  | { type: 'add_label'; label: string }
+  | { type: 'comment'; text: string };
+export interface AutomationRule {
+  id: string; name: string; enabled: boolean; trigger: AutoTrigger; condition: string | null; actions: AutoAction[];
+  owner: User; updated: string; stats: { runs: number; errors: number; lastRun: string | null };
+}
+export interface AutomationRun {
+  id: string; status: 'success' | 'no_action' | 'error'; message: string; actions: string[]; created: string;
+  rule: { id: string; name: string }; issue: { key: string; summary: string } | null; initiator: User | null;
+}
 export type SprintState = 'future' | 'active' | 'closed';
 export interface Sprint { id: string; name: string; goal: string; state: SprintState; startDate: string | null; endDate: string | null; completeDate: string | null }
 export interface BacklogData {
@@ -212,6 +231,14 @@ export const api = {
   deleteTransition: (id: string) => call<Workflow>('DELETE', `/transition/${id}`),
   notifications: (tab: 'direct' | 'watching' | 'all' = 'all', limit = 30) => call<Inbox>('GET', `/notifications?tab=${tab}&limit=${limit}`),
   markRead: (body: { ids?: string[]; all?: boolean; tab?: 'direct' | 'watching' | 'all' }) => call('POST', '/notifications/read', body),
+  rules: (key: string) => call<AutomationRule[]>('GET', `/project/${key}/automation`),
+  createRule: (key: string, body: { name: string; enabled?: boolean; trigger: AutoTrigger; condition?: string | null; actions: AutoAction[] }) =>
+    call<AutomationRule>('POST', `/project/${key}/automation`, body),
+  updateRule: (id: string, body: Partial<{ name: string; enabled: boolean; trigger: AutoTrigger; condition: string | null; actions: AutoAction[] }>) =>
+    call<AutomationRule>('PUT', `/automation/${id}`, body),
+  deleteRule: (id: string) => call('DELETE', `/automation/${id}`),
+  ruleRuns: (id: string) => call<AutomationRun[]>('GET', `/automation/${id}/runs`),
+  issueRuns: (key: string) => call<AutomationRun[]>('GET', `/issue/${key}/automation`),
   linkTypes: () => call<{ issueLinkTypes: LinkType[] }>('GET', '/issueLinkType'),
   createLink: (type: string, outwardKey: string, inwardKey: string) =>
     call<{ id: string }>('POST', '/issueLink', { type: { name: type }, outwardIssue: { key: outwardKey }, inwardIssue: { key: inwardKey } }),

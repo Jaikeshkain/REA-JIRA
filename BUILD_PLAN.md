@@ -69,6 +69,10 @@ delete-with-move) and transitions with validator (required fields) + condition (
 In-app bell (Direct / Watching), @mentions with suggestions, auto-watch on create/comment/assign; Timeline with
 drag-to-schedule, zoom levels, roll-up epic bars, start ≤ due rule.
 
-## Phase 3 complete. Candidates for Phase 4
-Automation rules, real-time updates (SSE/WebSocket), email delivery (+ filter subscriptions), SSO, custom-field
-columns in List/Search, dependency arrows on the Timeline, CSV import/export, bulk edit.
+## Phase 4 — part 1 done: automation rules
+When/If/Then rules (4 triggers, JQL condition, 5 action types, smart values), audit log per rule and per issue,
+non-login Automation actor, no rule-triggers-rule loops, per-rule transactional rollback on failure.
+
+## Phase 4 — remaining candidates
+Real-time updates (SSE/WebSocket), email delivery (+ filter subscriptions), SSO, custom-field columns in
+List/Search, dependency arrows on the Timeline, CSV import/export, bulk edit, scheduled automation triggers.

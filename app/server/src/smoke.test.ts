@@ -579,6 +579,75 @@ try {
     assert.ok(before.dev >= 0 && before.viewer >= 0);
   });
 
+  await test('automation: triggers, conditions, actions, audit log, no loops, permissions', async () => {
+    const rules = (await call(admin, 'GET', '/project/DEMO/automation')).body;
+    assert.deepEqual(rules.map((r: any) => [r.name, r.enabled]), [['New bugs start as High priority', true], ['Thank whoever finishes work', false]]);
+    assert.equal((await call(dev, 'GET', '/project/DEMO/automation')).status, 403, 'members cannot manage rules');
+    // seeded rule: new bug → High priority + "triage" label, attributed to the Automation user
+    const bug = (await call(dev, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Bug' }, summary: 'Crash on save' } })).body.key;
+    let b = (await call(dev, 'GET', `/issue/${bug}?expand=changelog`)).body;
+    assert.equal(b.fields.priority.name, 'High');
+    assert.deepEqual(b.fields.labels, ['triage']);
+    assert.ok(b.changelog.some((c: any) => c.author.displayName === 'Automation' && c.items[0].field === 'priority'));
+    const runs = (await call(dev, 'GET', `/issue/${bug}/automation`)).body;
+    assert.equal(runs[0].status, 'success');
+    assert.deepEqual(runs[0].actions, ['Set priority to High', 'Added label triage']);
+    // condition miss → logged as no_action, nothing changed
+    const task = (await call(dev, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'Plain task' } })).body.key;
+    assert.equal((await call(dev, 'GET', `/issue/${task}`)).body.fields.priority.name, 'Medium');
+    assert.equal((await call(dev, 'GET', `/issue/${task}/automation`)).body[0].status, 'no_action');
+    // the Automation user cannot sign in
+    assert.equal((await call(null, 'POST', '/auth/login', { email: 'automation@tracker.system', password: '!disabled' })).status, 401);
+
+    // new rule: when moved to In Review → assign reporter + comment with smart values
+    const wf = (await call(admin, 'GET', '/project/DEMO/workflow')).body;
+    const sid = (n: string) => wf.statuses.find((s: any) => s.name === n).id;
+    const bad = await call(admin, 'POST', '/project/DEMO/automation', { name: 'x', trigger: { type: 'issue_created' }, condition: 'nonsense = 1', actions: [{ type: 'add_label', label: 'a' }] });
+    assert.equal(bad.status, 400, 'condition JQL validated');
+    assert.equal((await call(admin, 'POST', '/project/DEMO/automation', { name: 'x', trigger: { type: 'issue_created' }, actions: [] })).status, 400);
+    const r1 = await call(admin, 'POST', '/project/DEMO/automation', {
+      name: 'Review hand-off', trigger: { type: 'issue_transitioned', toStatusId: sid('Review') },
+      actions: [{ type: 'assign', to: 'reporter' }, { type: 'comment', text: '{{initiator}} sent {{issue.key}} for review' }],
+    });
+    assert.equal(r1.status, 201, JSON.stringify(r1.body));
+    // a rule that would loop if rule changes triggered rules: on any transition, move to In Progress
+    await call(admin, 'POST', '/project/DEMO/automation', {
+      name: 'Bounce', trigger: { type: 'issue_transitioned', toStatusId: sid('To Do') }, actions: [{ type: 'transition', statusId: sid('In Progress') }],
+    });
+    const trs = (await call(dev, 'GET', `/issue/${task}/transitions`)).body.transitions;
+    await call(dev, 'POST', `/issue/${task}/transitions`, { transition: { id: trs.find((t: any) => t.to.name === 'Review').id } });
+    const t1 = (await call(dev, 'GET', `/issue/${task}`)).body;
+    assert.equal(t1.fields.assignee.displayName, 'Dana Dev', 'assigned to reporter (Dana created it)');
+    const cms = (await call(dev, 'GET', `/issue/${task}/comment`)).body.comments;
+    assert.equal(cms[0].author.displayName, 'Automation');
+    assert.equal(cms[0].body.content[0].content[0].text, `Dana Dev sent ${task} for review`);
+    // moving back to To Do fires "Bounce" once; its own transition does not re-trigger anything
+    const back = (await call(dev, 'GET', `/issue/${task}/transitions`)).body.transitions.find((t: any) => t.to.name === 'To Do');
+    const moved = await call(dev, 'POST', `/issue/${task}/transitions`, { transition: { id: back.id } });
+    assert.equal(moved.body.fields.status.name, 'In Progress', 'response reflects the rule result');
+    const bounceRuns = (await call(dev, 'GET', `/issue/${task}/automation`)).body.filter((x: any) => x.rule.name === 'Bounce');
+    assert.equal(bounceRuns.length, 1);
+    // failing action rolls back the whole rule and logs an error (Done requires an assignee)
+    const r2 = await call(admin, 'POST', '/project/DEMO/automation', {
+      name: 'Close on comment', trigger: { type: 'comment_added' },
+      actions: [{ type: 'add_label', label: 'closed-by-rule' }, { type: 'assign', to: 'unassigned' }, { type: 'transition', statusId: sid('Done') }],
+    });
+    await call(dev, 'POST', `/issue/${task}/comment`, { body: 'done here' });
+    const after = (await call(dev, 'GET', `/issue/${task}`)).body;
+    assert.ok(!after.fields.labels.includes('closed-by-rule'), 'rolled back');
+    assert.equal(after.fields.assignee.displayName, 'Dana Dev');
+    const errRun = (await call(admin, 'GET', `/automation/${r2.body.id}/runs`)).body[0];
+    assert.equal(errRun.status, 'error');
+    assert.match(errRun.message, /Fill in Assignee/);
+    // disable + stats
+    await call(admin, 'PUT', `/automation/${r2.body.id}`, { enabled: false });
+    const list = (await call(admin, 'GET', '/project/DEMO/automation')).body;
+    const st = list.find((x: any) => x.id === r2.body.id);
+    assert.equal(st.enabled, false);
+    assert.equal(st.stats.errors, 1);
+    assert.equal((await call(admin, 'DELETE', `/automation/${r2.body.id}`)).status, 204);
+  });
+
   await test('recently viewed list', async () => {
     await call(admin, 'GET', '/issue/DEMO-2');
     const r = (await call(admin, 'GET', '/recent')).body;

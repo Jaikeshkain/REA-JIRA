@@ -307,6 +307,40 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, created_at DESC);
 
+-- ---------------------------------------------------------------- Phase 4: automation
+
+-- trigger: {"type":"issue_created"} | {"type":"issue_transitioned","toStatusId"?,"fromStatusId"?}
+--          | {"type":"field_changed","field":"priority"} | {"type":"comment_added"}
+-- actions: [{"type":"transition","statusId"} | {"type":"assign","to":"reporter|initiator|unassigned|<accountId>"}
+--           | {"type":"set_field","field","value"} | {"type":"add_label","label"} | {"type":"comment","text"}]
+CREATE TABLE IF NOT EXISTS automation_rules (
+  id             SERIAL PRIMARY KEY,
+  project_id     INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name           TEXT NOT NULL,
+  enabled        BOOLEAN NOT NULL DEFAULT true,
+  trigger        JSONB NOT NULL,
+  condition_jql  TEXT,
+  actions        JSONB NOT NULL DEFAULT '[]',
+  created_by     INT NOT NULL REFERENCES users(id),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS automation_rules_project ON automation_rules(project_id) WHERE enabled;
+
+-- Audit log: one row per rule evaluation that matched its trigger
+CREATE TABLE IF NOT EXISTS automation_runs (
+  id          SERIAL PRIMARY KEY,
+  rule_id     INT NOT NULL REFERENCES automation_rules(id) ON DELETE CASCADE,
+  issue_id    INT REFERENCES issues(id) ON DELETE SET NULL,
+  status      TEXT NOT NULL CHECK (status IN ('success','no_action','error')),
+  message     TEXT NOT NULL DEFAULT '',
+  actions     JSONB NOT NULL DEFAULT '[]',
+  initiator_id INT REFERENCES users(id),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS automation_runs_rule ON automation_runs(rule_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS automation_runs_issue ON automation_runs(issue_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS recent_views (
   user_id      INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   entity_type  TEXT NOT NULL,

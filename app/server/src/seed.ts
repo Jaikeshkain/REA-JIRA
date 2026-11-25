@@ -163,6 +163,15 @@ export async function seed(db: Db) {
         ($1,$2,$3,$4,'status','{"from":"To Do","to":"In Progress","category":"in_progress"}', now() - interval '10 minutes')`,
       [tenant.id, dev.id, admin.id, ids[6], ids[10]],
     );
+    // ---- Phase 4 demo: automation rules
+    await q.query(
+      `INSERT INTO automation_rules (project_id, name, enabled, trigger, condition_jql, actions, created_by) VALUES
+        ($1, 'New bugs start as High priority', true, '{"type":"issue_created"}', 'type = Bug',
+         '[{"type":"set_field","field":"priority","value":"High"},{"type":"add_label","label":"triage"}]', $2),
+        ($1, 'Thank whoever finishes work', false, $3::jsonb, NULL,
+         '[{"type":"comment","text":"Nice work {{initiator}} — {{issue.key}} is done."}]', $2)`,
+      [p.id, admin.id, JSON.stringify({ type: 'issue_transitioned', toStatusId: String(st.Done) })],
+    );
     // DEMO-12 finished on day 2 so the burndown has a step
     await q.query(`UPDATE issues SET resolved_at = $1 WHERE id = $2`, [new Date(start.getTime() + 2 * day).toISOString(), ids[11]]);
     await q.query(`INSERT INTO comments (issue_id, author_id, body) VALUES ($1,$2,$3)`, [

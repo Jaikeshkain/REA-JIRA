@@ -14,6 +14,7 @@ import { dashboardRoutes } from './dashboards.js';
 import { customFieldRoutes } from './customfields.js';
 import { workflowRoutes } from './workflow.js';
 import { notificationRoutes } from './notifications.js';
+import { automationRoutes } from './automation.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -41,6 +42,7 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string } = {}) {
     customFieldRoutes(db),
     workflowRoutes(db),
     notificationRoutes(db),
+    automationRoutes(db),
   );
   app.use('/api', (_req, res) => {
     res.status(404).json({ errorMessages: ['Not found'] });

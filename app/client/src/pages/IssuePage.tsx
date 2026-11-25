@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, ApiError, type Comment, type Issue, type Priority, type Sprint, type Transition, type User } from '../api';
+import { api, ApiError, type AutomationRun, type Comment, type Issue, type Priority, type Sprint, type Transition, type User } from '../api';
 import { BUILTIN_LABELS, BuiltinInput, CustomFieldInput, inputValue, isMissing, rawValue } from '../fields';
 import { useAuth } from '../auth';
 import { useShell } from '../Layout';
 import { Attachments, LinkedItems } from '../IssueExtras';
 import { MentionTextarea } from '../MentionTextarea';
+import { RunList } from './Automation';
 import { AdfView, Avatar, InlineText, Popover, PriorityIcon, StatusLozenge, TypeIcon, adfToEditable, fmtDate, timeAgo } from '../ui';
 
 export function IssuePage() {
@@ -22,6 +23,8 @@ export function IssuePage() {
   const [tab, setTab] = useState<'comments' | 'history'>('comments');
   const [statusOpen, setStatusOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [runs, setRuns] = useState<AutomationRun[]>([]);
+  const [runsOpen, setRunsOpen] = useState(false);
   const [needs, setNeeds] = useState<{ transition: Transition; fields: string[] } | null>(null);
   const [editDesc, setEditDesc] = useState<string | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
@@ -31,6 +34,7 @@ export function IssuePage() {
       const i = await api.issue(key);
       setIssue(i);
       setComments((await api.comments(key)).comments);
+      api.issueRuns(key).then(setRuns, () => setRuns([]));
       setError(null);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
@@ -271,6 +275,13 @@ export function IssuePage() {
             ))}
             <Field label="Reporter"><span className="user-cell"><Avatar user={f.reporter} size={20} /> {f.reporter?.displayName}</span></Field>
             <Field label="Resolution">{f.resolution?.name ?? 'Unresolved'}</Field>
+          </section>
+          <section className="details automation-panel">
+            <button className="collapse-head" aria-expanded={runsOpen} onClick={() => setRunsOpen((o) => !o)}>
+              <h2>Automation</h2><span className="muted small">{runs.length ? `${runs.length} rule execution${runs.length === 1 ? '' : 's'}` : 'No rule executions'}</span>
+              <span className="grow" /><span aria-hidden>{runsOpen ? '▾' : '▸'}</span>
+            </button>
+            {runsOpen && (runs.length ? <RunList runs={runs} showRule /> : <p className="muted small">Rules in this space haven’t run on this work item.</p>)}
           </section>
           <p className="muted small">Created {timeAgo(f.created)}<br />Updated {timeAgo(f.updated)}{f.duedate ? <><br />Due {fmtDate(f.duedate)}</> : null}</p>
         </aside>

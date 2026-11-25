@@ -27,7 +27,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (23 checks)
+npm test           # API smoke test on an in-memory database (24 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -113,6 +113,25 @@ npm run build      # type-check server + client, production-build client
 - API: `GET|POST /api/project/:key/fields`, `PUT|DELETE /api/field/:id`; `GET /api/project/:key/workflow`,
   `POST /api/project/:key/statuses`, `PUT|DELETE /api/status/:id[?moveTo=]`, `POST /api/project/:key/transitions`,
   `PUT|DELETE /api/transition/:id`; `customfield_<id>` keys on create and `PATCH /api/issue/:key/fields/customfield_<id>`.
+
+## Phase 4 (part 1): automation rules
+
+- **Space settings → Automation** (admins): rules read as *When … If … Then …*, with an on/off switch, run/failure
+  counts and an **audit log** per rule. The issue page has an **Automation** panel listing rule executions.
+- **Triggers:** work item created · transitioned (optionally from/to a status) · a field changed (assignee, priority,
+  labels, dates, story points, summary, description, sprint, any custom field) · comment added.
+- **Condition:** optional JQL the work item must match (`type = Bug AND priority >= High`).
+- **Actions** (in order, up to 10): transition · assign (reporter / whoever triggered it / unassigned / a member) ·
+  edit a field (priority, due date incl. `+7d`, story points, custom fields) · add a label · add a comment with smart
+  values `{{issue.key}}`, `{{issue.summary}}`, `{{issue.status}}`, `{{initiator}}`.
+- **Safety:** rules run right after the change, as a non-login **Automation** user (shown in History, comments and
+  notifications). Changes made by rules never trigger rules, so they can't loop. A rule's actions run in one
+  transaction — if any fails (e.g. a workflow validator), its changes roll back and the run is logged as *Failed*.
+- API: `GET|POST /api/project/:key/automation`, `PUT|DELETE /api/automation/:id`, `GET /api/automation/:id/runs`,
+  `GET /api/issue/:key/automation`.
+
+The demo space has two rules: **New bugs start as High priority** (on; also adds a `triage` label) and **Thank
+whoever finishes work** (off; comments when work reaches Done).
 
 ## Phase 3 (part 4): notifications + timeline
 

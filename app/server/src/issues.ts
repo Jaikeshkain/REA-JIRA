@@ -9,6 +9,7 @@ import { sanitizeAdf, adfToText } from './adf.js';
 import { rankBetween } from './lexorank.js';
 import { parse, compile, FROM } from './jql.js';
 import { setIssueSprint } from './sprints.js';
+import { fireAutomation } from './automation.js';
 import { excerpt, linkMentions, mentionedIds, notify, watch, watchersOf } from './notifications.js';
 import { transitionsFor, applyTransition, trJson } from './workflow.js';
 import { appliesTo, cfKey, fieldJson, fieldsOf, jqlCtx, normalise, setValue, valuesFor } from './customfields.js';
@@ -241,6 +242,7 @@ export function issueRoutes(db: Db, store: FileStore) {
         return { id: row.id, key };
       });
       res.status(201);
+      await fireAutomation(db, { type: 'issue_created', issueId: created.id, actorId: user.id });
       return { id: String(created.id), key: created.key, self: `/api/issue/${created.key}` };
     }),
   );
@@ -401,6 +403,7 @@ export function issueRoutes(db: Db, store: FileStore) {
           }
         }
       });
+      await fireAutomation(db, { type: 'field_changed', issueId: row.id, actorId: user.id, field });
       const { row: fresh } = await loadIssue(db, user, String(req.params.key));
       return issueJson(fresh);
     }),
@@ -423,6 +426,8 @@ export function issueRoutes(db: Db, store: FileStore) {
       if (!can(role, 'TRANSITION_ISSUES', user.isSiteAdmin)) throw forbidden('TRANSITION_ISSUES');
       const id = Number(z.object({ transition: z.object({ id: z.union([z.string(), z.number()]) }) }).parse(req.body).transition.id);
       await db.tx((q) => applyTransition(q, user, role, row, id));
+      const [now] = await db.query(`SELECT status_id FROM issues WHERE id = $1`, [row.id]);
+      if (now && now.status_id !== row.status_id) await fireAutomation(db, { type: 'issue_transitioned', issueId: row.id, actorId: user.id, fromStatusId: row.status_id, toStatusId: now.status_id });
       const { row: fresh } = await loadIssue(db, user, String(req.params.key));
       return issueJson(fresh);
     }),
@@ -474,6 +479,8 @@ export function issueRoutes(db: Db, store: FileStore) {
           await logChange(q, row.id, user.id, 'Rank', {}, { s: body.prevKey ? `after ${body.prevKey}` : `before ${body.nextKey}` });
         }
       });
+      const [now] = await db.query(`SELECT status_id FROM issues WHERE id = $1`, [row.id]);
+      if (now && now.status_id !== row.status_id) await fireAutomation(db, { type: 'issue_transitioned', issueId: row.id, actorId: user.id, fromStatusId: row.status_id, toStatusId: now.status_id });
       const { row: fresh } = await loadIssue(db, user, String(req.params.key));
       return issueJson(fresh);
     }),
@@ -539,6 +546,7 @@ export function issueRoutes(db: Db, store: FileStore) {
         return c;
       });
       res.status(201);
+      await fireAutomation(db, { type: 'comment_added', issueId: row.id, actorId: user.id });
       return commentJson({ ...c, display_name: user.displayName, email: user.email, avatar_color: user.avatarColor });
     }),
   );
