@@ -27,7 +27,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (30 checks)
+npm test           # API smoke test on an in-memory database (31 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -113,6 +113,17 @@ npm run build      # type-check server + client, production-build client
 - API: `GET|POST /api/project/:key/fields`, `PUT|DELETE /api/field/:id`; `GET /api/project/:key/workflow`,
   `POST /api/project/:key/statuses`, `PUT|DELETE /api/status/:id[?moveTo=]`, `POST /api/project/:key/transitions`,
   `PUT|DELETE /api/transition/:id`; `customfield_<id>` keys on create and `PATCH /api/issue/:key/fields/customfield_<id>`.
+
+## Phase 4 (part 5): timeline dependencies + list fields
+
+- **Dependencies on the Timeline.** "Blocks" links between work in the space are drawn as arrows from the end of the
+  blocking work to the start of the blocked work. When blocked work is scheduled to start before its blocker ends, the
+  arrow turns red and dashed, the row gets a ⚠, and the toolbar counts the conflicts. Arrows follow bars while you drag.
+- **Add or remove one on the Timeline:** drag the dot at the end of a bar onto another bar ("this blocks that"); click
+  an arrow to remove it. They're ordinary work item links, so they also show on each work item. A **Dependencies**
+  toggle hides the arrows. `GET /api/project/:key/dependencies` lists them (space members only).
+- **Custom fields in the List view.** **Fields ▾** adds any of the space's custom fields as columns; the choice is
+  remembered per space in this browser.
 
 ## Phase 4 (part 4): email + scheduled work
 

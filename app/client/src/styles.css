@@ -517,3 +517,15 @@ code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
 .mail-preview { width: 100%; height: 420px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
 .mail-text { white-space: pre-wrap; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 6px; padding: 12px; max-height: 420px; overflow: auto; font-size: 13px; }
 @media (prefers-color-scheme: dark) { .lozenge-failed { background: #5d1f1a; color: #fd9891; } }
+
+/* ---------- timeline dependencies (Phase 4) ---------- */
+.tl-deps { position: absolute; top: 44px; left: 0; pointer-events: none; z-index: 1; overflow: visible; }
+.tl-dep-line { fill: none; stroke: var(--text-muted); stroke-width: 1.5; }
+.tl-arrowhead { fill: var(--text-muted); }
+.tl-dep.bad .tl-dep-line { stroke: var(--danger); stroke-dasharray: 4 3; }
+.tl-arrowhead.bad { fill: var(--danger); }
+.tl-dep-hit { fill: none; stroke: transparent; stroke-width: 10; pointer-events: stroke; cursor: pointer; }
+.tl-dep:hover .tl-dep-line { stroke-width: 2.5; }
+.tl-dep-draft { fill: none; stroke: var(--brand); stroke-width: 2; stroke-dasharray: 5 4; pointer-events: none; }
+.tl-connector { position: absolute; right: -16px; top: 7px; width: 10px; height: 10px; border-radius: 50%; background: var(--surface); border: 2px solid var(--brand); cursor: crosshair; opacity: 0; touch-action: none; }
+.tl-bar:hover .tl-connector, .tl-connector:focus { opacity: 1; }

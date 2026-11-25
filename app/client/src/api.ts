@@ -56,6 +56,7 @@ export interface Project {
   issueTypes: IssueType[]; statuses: (Status & { position: number })[]; members: User[]; myRole: string | null; myPermissions: string[];
   features: { sprints: boolean };
 }
+export interface Dependency { id: string; blocker: string; blocked: string }
 export interface LinkType { id: string; name: string; inward: string; outward: string }
 export interface LinkedIssue {
   id: string; key: string;
@@ -295,6 +296,7 @@ export const api = {
   createLink: (type: string, outwardKey: string, inwardKey: string) =>
     call<{ id: string }>('POST', '/issueLink', { type: { name: type }, outwardIssue: { key: outwardKey }, inwardIssue: { key: inwardKey } }),
   deleteLink: (id: string) => call('DELETE', `/issueLink/${id}`),
+  dependencies: (key: string) => call<{ dependencies: Dependency[] }>('GET', `/project/${key}/dependencies`),
   deleteAttachment: (id: string) => call('DELETE', `/attachment/${id}`),
   /** Raw-body upload; the server stores bytes as-is (max size enforced server-side). */
   uploadAttachment: async (key: string, file: File) => {

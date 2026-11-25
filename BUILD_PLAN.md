@@ -87,6 +87,10 @@ Per-person email preference (immediate / daily digest / off), filter subscriptio
 scheduled automation trigger (hourly/daily/weekly + required JQL), SMTP delivery with retries or a dev outbox for
 site admins, one DB-driven background scheduler.
 
+## Phase 4 — part 5 done: timeline dependencies + list fields
+Blocks links drawn as Timeline arrows with conflict flags, drag-to-link and click-to-remove; custom-field columns
+in the space List view.
+
 ## Phase 4 — remaining candidates
-SSO, dependency arrows on the Timeline, custom-field columns in the space List view, multi-instance real-time
+SSO, multi-instance real-time
 and scheduler (Postgres LISTEN/NOTIFY + advisory lock).

@@ -6,7 +6,7 @@ import { FieldsEditor, WorkflowEditor } from './SettingsEditors';
 import { ImportDialog } from '../ImportDialog';
 import { AutomationEditor } from './Automation';
 import { PageHeader, useShell } from '../Layout';
-import { Avatar, PriorityIcon, StatusLozenge, TypeIcon, fmtDate, timeAgo, useAsync } from '../ui';
+import { Avatar, Popover, PriorityIcon, StatusLozenge, TypeIcon, fmtDate, timeAgo, useAsync } from '../ui';
 
 type Ctx = { project: Project };
 export const useProject = () => useOutletContext<Ctx>().project;
@@ -198,7 +198,15 @@ export function List() {
   const sort = params.get('sort') ?? 'rank';
   const dir = params.get('dir') === 'DESC' ? 'DESC' : 'ASC';
   const jql = `project = ${project.key} ORDER BY ${sort} ${dir}`;
-  const res = useAsync(() => api.search(jql, 0, 200), [jql, version]);
+  // extra columns: this space's custom fields, chosen per space and remembered in this browser
+  const fields = useAsync(() => api.fields(project.key), [project.key, version]);
+  const storeKey = `tracker.listColumns.${project.key}`;
+  const [extra, setExtraState] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem(storeKey) ?? '[]'); } catch { return []; } });
+  useEffect(() => { try { setExtraState(JSON.parse(localStorage.getItem(storeKey) ?? '[]')); } catch { setExtraState([]); } }, [storeKey]);
+  const setExtra = (v: string[]) => { setExtraState(v); try { localStorage.setItem(storeKey, JSON.stringify(v)); } catch { /* private mode */ } };
+  const [picker, setPicker] = useState(false);
+  const shown = (fields.data ?? []).filter((f) => extra.includes(f.id)); // drops fields deleted since
+  const res = useAsync(() => api.searchTable(jql, ['key', ...shown.map((f) => f.id)], 0, 200), [jql, version, shown.map((f) => f.id).join()]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   // List shows the hierarchy: top-level items with their children beneath (Jira "Expand hierarchy")
@@ -212,7 +220,7 @@ export function List() {
 
   const sortBy = (col: string) => setParams({ sort: col, dir: sort === col && dir === 'ASC' ? 'DESC' : 'ASC' });
 
-  const row = (i: Issue, depth: number): React.ReactNode => {
+  const row = (i: Issue & { custom?: Record<string, string | null> }, depth: number): React.ReactNode => {
     const children = kids.get(i.key) ?? [];
     const open = expanded.has(i.key);
     return [
@@ -232,6 +240,7 @@ export function List() {
         <td>{new Date(i.fields.created).toLocaleDateString()}</td>
         <td>{timeAgo(i.fields.updated)}</td>
         <td>{fmtDate(i.fields.duedate)}</td>
+        {shown.map((f) => <td key={f.id} className="cf-cell">{i.custom?.[f.id] ?? <span className="muted">—</span>}</td>)}
       </tr>,
       ...(open ? children.map((c) => row(c, depth + 1)) : []),
     ];
@@ -241,6 +250,23 @@ export function List() {
     <>
       <div className="toolbar"><span className="muted small">JQL: <code>{jql}</code></span><span className="grow" />
         {project.myPermissions.includes('CREATE_ISSUES') && <button className="btn subtle" onClick={() => setImporting(true)}>Import CSV</button>}
+        {(fields.data?.length ?? 0) > 0 && (
+          <span className="menu-anchor">
+            <button className="btn subtle" onClick={() => setPicker((o) => !o)} aria-haspopup="dialog" aria-expanded={picker}>Fields{shown.length ? ` (${shown.length})` : ''} ▾</button>
+            <Popover open={picker} onClose={() => setPicker(false)} align="right">
+              <div className="col-picker" role="dialog" aria-label="Show custom fields as columns">
+                <span className="muted small">Show this space’s fields as columns</span>
+                {fields.data!.map((f) => (
+                  <label key={f.id} className="check small-check">
+                    <input type="checkbox" checked={extra.includes(f.id)}
+                      onChange={(e) => setExtra(e.target.checked ? [...extra, f.id] : extra.filter((x) => x !== f.id))} />
+                    {f.name}
+                  </label>
+                ))}
+              </div>
+            </Popover>
+          </span>
+        )}
         <Link className="btn subtle" to={`/issues?jql=${encodeURIComponent(jql)}`}>Open in search · bulk change</Link></div>
       {importing && <ImportDialog projectKey={project.key} onClose={() => setImporting(false)} onImported={bump} />}
       {res.error && <p className="error">{res.error.message}</p>}
@@ -251,7 +277,8 @@ export function List() {
               <th key={c.key} aria-sort={sort === c.order ? (dir === 'ASC' ? 'ascending' : 'descending') : 'none'}>
                 <button className="th-btn" onClick={() => sortBy(c.order)}>{c.label}{sort === c.order ? (dir === 'ASC' ? ' ↑' : ' ↓') : ''}</button>
               </th>
-            ))}</tr>
+            ))}
+              {shown.map((f) => <th key={f.id} title={`${f.name} (custom field)`}>{f.name}</th>)}</tr>
           </thead>
           <tbody>{roots.map((i) => row(i, 0))}</tbody>
         </table>

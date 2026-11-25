@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { Db } from './db.js';
 import type { AuthUser } from './auth.js';
 import { h, bad, notFound, forbidden } from './http.js';
-import { roleIn } from './access.js';
+import { projectByKey, roleIn } from './access.js';
 import { can } from './permissions.js';
 
 const typeJson = (t: any) => ({ id: String(t.id), name: t.name, inward: t.inward, outward: t.outward });
@@ -131,6 +131,21 @@ export function linkRoutes(db: Db) {
       return undefined;
     }),
   );
+
+  /** Timeline dependencies: "blocks" links where both ends are in this space (Jira timeline shows these as arrows). */
+  r.get('/project/:key/dependencies', h(async (req) => {
+    const user = req.user!;
+    const p = await projectByKey(db, user, String(req.params.key));
+    if (!can(await roleIn(db, user, p.id), 'BROWSE_PROJECTS', user.isSiteAdmin)) throw notFound(`Project ${req.params.key}`);
+    const rows = await db.query(
+      `SELECT l.id, o.key AS blocker, i.key AS blocked
+       FROM issue_links l JOIN link_types lt ON lt.id = l.type_id
+       JOIN issues o ON o.id = l.outward_issue_id JOIN issues i ON i.id = l.inward_issue_id
+       WHERE lt.name = 'Blocks' AND o.project_id = $1 AND i.project_id = $1 ORDER BY l.id`,
+      [p.id],
+    );
+    return { dependencies: rows.map((x) => ({ id: String(x.id), blocker: x.blocker, blocked: x.blocked })) };
+  }));
 
   return r;
 }

@@ -943,6 +943,25 @@ try {
     await call(admin, 'DELETE', `/automation/${rule.id}`);
   });
 
+  await test('timeline dependencies: blocks links inside the space, scoped to members', async () => {
+    const deps = async (t: string | null) => call(t, 'GET', '/project/DEMO/dependencies');
+    const base = (await deps(viewer)).body.dependencies;
+    assert.ok(base.some((d: any) => d.blocker === 'DEMO-11' && d.blocked === 'DEMO-6'), 'seeded: login bug blocks notifications');
+    assert.ok(base.every((d: any) => d.blocker && d.blocked));
+    const l = (await call(dev, 'POST', '/issueLink', { type: { name: 'Blocks' }, outwardIssue: { key: 'DEMO-2' }, inwardIssue: { key: 'DEMO-3' } }));
+    assert.equal(l.status, 201);
+    await call(dev, 'POST', '/issueLink', { type: { name: 'Relates' }, outwardIssue: { key: 'DEMO-2' }, inwardIssue: { key: 'DEMO-4' } });
+    const now = (await deps(dev)).body.dependencies;
+    assert.ok(now.some((d: any) => d.blocker === 'DEMO-2' && d.blocked === 'DEMO-3'));
+    assert.ok(!now.some((d: any) => d.blocked === 'DEMO-4'), 'only "blocks" links are dependencies');
+    const out = (await call(null, 'POST', '/auth/login', { email: 'out2@tracker.test', password: 'longenough1' })).body.token;
+    assert.equal((await deps(out)).status, 404, 'non-members cannot see the space');
+    assert.equal((await deps(null)).status, 401);
+    const id = now.find((d: any) => d.blocker === 'DEMO-2').id;
+    assert.equal((await call(dev, 'DELETE', `/issueLink/${id}`)).status, 204);
+    assert.ok(!(await deps(dev)).body.dependencies.some((d: any) => d.id === id));
+  });
+
   await test('recently viewed list', async () => {
     await call(admin, 'GET', '/issue/DEMO-2');
     const r = (await call(admin, 'GET', '/recent')).body;
