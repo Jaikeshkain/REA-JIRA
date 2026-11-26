@@ -218,7 +218,7 @@ export function oidcRoutes(db: Db, cfg: OidcConfig | null) {
         const colors = ['#0c66e4', '#6e5dc6', '#1f845a', '#c9372c', '#a54800', '#206a83', '#943d73'];
         // no usable password: '!' is never a valid bcrypt hash, so password sign-in is impossible for this account
         [user] = await db.query(
-          `INSERT INTO users (tenant_id, email, display_name, password_hash, avatar_color) VALUES ($1,$2,$3,'!sso',$4) RETURNING *`,
+          `INSERT INTO users (tenant_id, email, display_name, password_hash, avatar_color, email_verified_at) VALUES ($1,$2,$3,'!sso',$4, now()) RETURNING *`,
           [tenant.id, email, name, colors[Math.floor(Math.random() * colors.length)]],
         );
       }
@@ -244,6 +244,7 @@ export function oidcRoutes(db: Db, cfg: OidcConfig | null) {
     const [u] = await db.query(`SELECT * FROM users WHERE id = $1 AND active`, [row.user_id]);
     if (!u) throw new HttpError(401, 'Your account is deactivated.');
     const token = await createSession(db, u.id);
+    await db.query(`UPDATE users SET last_login_at = now(), email_verified_at = coalesce(email_verified_at, now()) WHERE id = $1`, [u.id]);
     await audit(db, { tenantId: u.tenant_id, actorId: u.id, actorName: u.display_name, category: 'sign-in', action: 'Signed in with SSO', target: u.email, ip: req.ip });
     return {
       token, next: row.next,

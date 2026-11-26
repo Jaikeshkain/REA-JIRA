@@ -29,6 +29,7 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     return;
   }
   if (err instanceof HttpError) {
+    if ((err as any).retryAfter) res.setHeader('Retry-After', String((err as any).retryAfter));
     res.status(err.status).json({ errorMessages: [err.message], errors: err.details ?? {} });
     return;
   }

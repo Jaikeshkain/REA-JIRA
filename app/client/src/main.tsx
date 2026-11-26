@@ -17,10 +17,17 @@ import { DashboardList, DashboardView } from './pages/Dashboards';
 import { NotificationSettings, Outbox } from './pages/Email';
 import { ApiTokens, AuditLog, Webhooks } from './pages/Admin';
 import { Releases, VersionDetail } from './pages/Releases';
+import { AcceptInvite, AccountSettings, ResetPassword, VerifyEmail } from './pages/Account';
+import { Groups, Users } from './pages/People';
 
 function App() {
   const { user, ready } = useAuth();
   if (!ready) return <div className="splash">Loading…</div>;
+  // one-time links work whether or not you're signed in
+  const path = window.location.pathname;
+  if (path === '/reset') return <ResetPassword />;
+  if (path === '/invite') return <AcceptInvite />;
+  if (path === '/verify') return <VerifyEmail />;
   if (!user) return <Login />;
   return (
     <Routes>
@@ -52,6 +59,9 @@ function App() {
         <Route path="/admin/audit" element={<AuditLog />} />
         <Route path="/admin/webhooks" element={<Webhooks />} />
         <Route path="/settings/tokens" element={<ApiTokens />} />
+        <Route path="/settings/account" element={<AccountSettings />} />
+        <Route path="/admin/users" element={<Users />} />
+        <Route path="/admin/groups" element={<Groups />} />
         <Route path="*" element={<div className="page"><h1>Page not found</h1></div>} />
       </Route>
     </Routes>

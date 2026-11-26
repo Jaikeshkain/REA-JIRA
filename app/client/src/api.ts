@@ -1,6 +1,8 @@
 // Typed client for the Tracker API (shapes follow app/server/src/issues.ts + projects.ts).
 
-export interface User { accountId: string; displayName: string; emailAddress?: string; avatarColor?: string; isSiteAdmin?: boolean; role?: string }
+export interface User { accountId: string; displayName: string; emailAddress?: string; avatarColor?: string; isSiteAdmin?: boolean; role?: string; emailVerified?: boolean }
+export interface AdminUser extends User { active: boolean; isSiteAdmin: boolean; emailVerified: boolean; status: 'active' | 'invited' | 'deactivated'; sso: boolean; lastLogin: string | null; created: string; groups: string[] }
+export interface Group { id: string; name: string; description: string; members: { accountId: string; displayName: string; active: boolean }[]; spaces: { key: string; role: string }[] }
 export interface StatusCat { key: 'todo' | 'in_progress' | 'done'; name?: string }
 export interface Status { id: string; name: string; statusCategory: StatusCat }
 export interface IssueType { id: string; name: string; hierarchyLevel: number; color: string }
@@ -191,6 +193,28 @@ export const api = {
   register: (email: string, displayName: string, password: string) =>
     call<{ token: string; user: User }>('POST', '/auth/register', { email, displayName, password }),
   logout: () => call('POST', '/auth/logout'),
+  forgotPassword: (email: string) => call<{ ok: boolean; message: string }>('POST', '/auth/forgot', { email }),
+  resetPassword: (token: string, password: string) => call<{ token: string; user: User }>('POST', '/auth/reset', { token, password }),
+  verifyEmail: (token: string) => call<{ ok: boolean }>('POST', '/auth/verify', { token }),
+  inviteInfo: (token: string) => call<{ email: string; displayName: string }>('GET', `/auth/invite?token=${encodeURIComponent(token)}`),
+  acceptInvite: (token: string, password: string, displayName: string) => call<{ token: string; user: User }>('POST', '/auth/accept-invite', { token, password, displayName }),
+  changePassword: (currentPassword: string, newPassword: string) => call('POST', '/myself/password', { currentPassword, newPassword }),
+  resendVerification: () => call('POST', '/myself/verify-email'),
+  signOutEverywhere: () => call('POST', '/myself/sign-out-everywhere'),
+  adminUsers: (query: string) => call<AdminUser[]>('GET', `/admin/users?query=${encodeURIComponent(query)}`),
+  inviteUser: (email: string, displayName: string, siteAdmin: boolean) => call<AdminUser>('POST', '/admin/users/invite', { email, displayName, siteAdmin }),
+  resendInvite: (id: string) => call('POST', `/admin/users/${id}/resend-invite`),
+  deactivateUser: (id: string) => call('POST', `/admin/users/${id}/deactivate`),
+  activateUser: (id: string) => call('POST', `/admin/users/${id}/activate`),
+  setSiteAdmin: (id: string, siteAdmin: boolean) => call('PUT', `/admin/users/${id}`, { siteAdmin }),
+  groups: () => call<Group[]>('GET', '/admin/groups'),
+  createGroup: (name: string) => call<Group>('POST', '/admin/groups', { name }),
+  deleteGroup: (id: string) => call('DELETE', `/admin/groups/${id}`),
+  addGroupMembers: (id: string, accountIds: string[]) => call<Group>('POST', `/admin/groups/${id}/members`, { accountIds }),
+  removeGroupMember: (id: string, userId: string) => call<Group>('DELETE', `/admin/groups/${id}/members/${userId}`),
+  spaceGroups: (key: string) => call<{ groups: { id: string; name: string; role: string; memberCount: number }[]; available: { id: string; name: string }[] }>('GET', `/project/${key}/groups`),
+  addSpaceGroup: (key: string, groupId: string, role: string) => call('POST', `/project/${key}/groups`, { groupId, role }),
+  removeSpaceGroup: (key: string, groupId: string) => call('DELETE', `/project/${key}/groups/${groupId}`),
   ssoConfig: () => call<{ enabled: boolean; name: string | null; passwordLogin: 'all' | 'admins' }>('GET', '/auth/oidc/config'),
   ssoExchange: (code: string) => call<{ token: string; next: string; user: User }>('POST', '/auth/oidc/exchange', { code }),
   myself: () => call<User>('GET', '/myself'),

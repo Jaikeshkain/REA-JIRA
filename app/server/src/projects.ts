@@ -258,7 +258,7 @@ export function projectRoutes(db: Db) {
       if (!u) throw bad('No user with that email on this site — they need to sign up first');
       await db.query(
         `INSERT INTO project_members (project_id, user_id, role) VALUES ($1,$2,$3)
-         ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+         ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role, via_group_id = NULL`, // now a direct member
         [p.id, u.id, body.role],
       );
       return membersOf(db, p.id);
@@ -280,7 +280,7 @@ export function projectRoutes(db: Db) {
     '/myself',
     h(async (req) => {
       const u = req.user!;
-      return { accountId: String(u.id), displayName: u.displayName, emailAddress: u.email, avatarColor: u.avatarColor, isSiteAdmin: u.isSiteAdmin };
+      return { accountId: String(u.id), displayName: u.displayName, emailAddress: u.email, avatarColor: u.avatarColor, isSiteAdmin: u.isSiteAdmin, emailVerified: u.emailVerified ?? true };
     }),
   );
 

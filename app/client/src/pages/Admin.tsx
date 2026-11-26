@@ -12,6 +12,8 @@ const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString(undefin
 export function AdminTabs() {
   return (
     <nav className="tabs" aria-label="Administration">
+      <NavLink to="/admin/users">Users</NavLink>
+      <NavLink to="/admin/groups">Groups</NavLink>
       <NavLink to="/admin/audit">Audit log</NavLink>
       <NavLink to="/admin/webhooks">Webhooks</NavLink>
       <NavLink to="/admin/outbox">Email outbox</NavLink>

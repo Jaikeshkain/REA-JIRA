@@ -120,3 +120,13 @@ Votes (JQL votes/voter), WAS / WAS NOT / WAS IN / CHANGED with FROM TO BY AFTER 
 
 ## Phase 5 — complete
 All items from the requirements' Phase 2–3 roadmap are built.
+
+## Must-haves done: accounts, administration, deployment
+Password reset, email verification, invitations, change password, rate limits, idle sessions; admin users
+(invite/deactivate/site admin) and groups granting space roles; Dockerfile, compose with PostgreSQL, CI, production
+serving with security headers.
+
+## Still open (from JIRA_REQUIREMENTS.md)
+Configurable permission/notification schemes, workflow post-functions, dev-tool integrations (GitHub/GitLab), Forms,
+AI summaries, Jira-identical REST paths (/rest/api/3), JQL autocomplete, attachment thumbnails/virus scan/S3,
+passkeys, Excel export, multiple organisations per install.

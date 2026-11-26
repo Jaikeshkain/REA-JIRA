@@ -580,3 +580,11 @@ code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
 .archived-banner { background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; color: var(--text-subtle); font-size: 13px; }
 .sec-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; }
 .chips-row { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+
+/* ---------- accounts (must-haves) ---------- */
+.verify-wrap { grid-column: 1 / -1; }
+.shell:has(> .verify-wrap) { grid-template: var(--top-h) auto 1fr / var(--side-w) 1fr; }
+.verify-banner { background: #fff7d6; color: #533f04; border-bottom: 1px solid #f5cd47; padding: 8px 16px; font-size: 13px; }
+.verify-banner .link-btn { color: inherit; text-decoration: underline; }
+@media (prefers-color-scheme: dark) { .verify-banner { background: #3d2e00; color: #f8e6a0; border-color: #7f5f01; } }
+tr.muted td { color: var(--text-muted); }

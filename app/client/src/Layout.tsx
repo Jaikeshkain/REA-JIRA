@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import { VerifyBanner } from './pages/Account';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { api, type ProjectSummary } from './api';
 import { useAuth } from './auth';
@@ -94,13 +95,15 @@ export function Layout() {
             </button>
             <Popover open={menu} onClose={() => setMenu(false)} align="right">
               <div className="menu-head"><strong>{user?.displayName}</strong><span className="muted small">{user?.emailAddress}</span></div>
+              <button className="menu-item" onClick={() => { setMenu(false); nav('/settings/account'); }}>Account & password</button>
               <button className="menu-item" onClick={() => { setMenu(false); nav('/settings/notifications'); }}>Notification settings</button>
               <button className="menu-item" onClick={() => { setMenu(false); nav('/settings/tokens'); }}>API tokens</button>
-              {user?.isSiteAdmin && <button className="menu-item" onClick={() => { setMenu(false); nav('/admin/audit'); }}>Administration</button>}
+              {user?.isSiteAdmin && <button className="menu-item" onClick={() => { setMenu(false); nav('/admin/users'); }}>Administration</button>}
               <button className="menu-item" onClick={() => { setMenu(false); signOut(); }}>Log out</button>
             </Popover>
           </div>
         </header>
+        {user && user.emailVerified === false && <div className="verify-wrap"><VerifyBanner /></div>}
         <nav className="sidebar" aria-label="Sidebar">
           <NavLink to="/for-you" className="side-link">For you</NavLink>
           <NavLink to="/issues" end className="side-link">Search</NavLink>

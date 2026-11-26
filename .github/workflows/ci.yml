@@ -1,0 +1,64 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - name: Type-check server and client
+        run: npm run typecheck
+      - name: Build the web app
+        run: npm run build -w client
+      - name: Smoke tests (embedded database)
+        run: npm test
+        env:
+          DISABLE_SCHEDULER: "1"
+
+  multi-instance:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: tracker
+          POSTGRES_PASSWORD: tracker-ci
+          POSTGRES_DB: tracker
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tracker" --health-interval 5s --health-timeout 5s --health-retries 20
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - name: Two instances against real PostgreSQL
+        run: npm run test:multi -w server
+        env:
+          DATABASE_URL: postgres://tracker:tracker-ci@localhost:5432/tracker
+          DISABLE_SCHEDULER: "1"
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t tracker:ci ./app

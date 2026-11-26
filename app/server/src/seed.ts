@@ -29,6 +29,7 @@ export async function seed(db: Db) {
     const users: AuthUser[] = [];
     for (const u of DEMO_USERS) users.push(await createUser(q, tenant.id, u.email, u.name, u.password, u.siteAdmin));
     const [admin, dev] = users;
+    await q.query(`UPDATE users SET email_verified_at = now() WHERE tenant_id = $1`, [tenant.id]); // demo accounts are verified
     const p = await createProject(q, admin, { key: 'DEMO', name: 'Demo Billing System', description: 'Sample project mirroring the Jira example space.' });
     for (const [i, u] of users.entries()) {
       if (i === 0) continue;

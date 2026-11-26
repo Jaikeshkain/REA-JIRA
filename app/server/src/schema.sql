@@ -545,3 +545,48 @@ CREATE TABLE IF NOT EXISTS security_levels (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE issues ADD COLUMN IF NOT EXISTS security_level_id INT REFERENCES security_levels(id) ON DELETE SET NULL;
+
+-- ---------------------------------------------------------------- must-haves: accounts, rate limits, groups
+-- existing accounts count as verified (the default backfills them once); new ones start unverified
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ DEFAULT now();
+ALTER TABLE users ALTER COLUMN email_verified_at DROP DEFAULT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  id          SERIAL PRIMARY KEY,
+  user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL CHECK (kind IN ('reset','verify','invite')),
+  token_hash  TEXT NOT NULL UNIQUE,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  used_at     TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS auth_failures (
+  id          SERIAL PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  email       TEXT NOT NULL,
+  ip          TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS auth_failures_recent ON auth_failures (kind, created_at);
+CREATE TABLE IF NOT EXISTS groups (
+  id           SERIAL PRIMARY KEY,
+  tenant_id    INT NOT NULL REFERENCES tenants(id),
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS groups_name ON groups (tenant_id, lower(name));
+CREATE TABLE IF NOT EXISTS group_members (
+  group_id  INT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  user_id   INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY (group_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS project_groups (
+  project_id  INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  group_id    INT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  role        TEXT NOT NULL CHECK (role IN ('admin','member','viewer','guest')),
+  PRIMARY KEY (project_id, group_id)
+);
+ALTER TABLE project_members ADD COLUMN IF NOT EXISTS via_group_id INT REFERENCES groups(id) ON DELETE CASCADE;

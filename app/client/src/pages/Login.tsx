@@ -6,7 +6,8 @@ type SsoConfig = { enabled: boolean; name: string | null; passwordLogin: 'all' |
 
 export function Login() {
   const { signIn, signUp, ssoError } = useAuth();
-  const [mode, setMode] = useState<'in' | 'up'>('in');
+  const [mode, setMode] = useState<'in' | 'up' | 'forgot'>('in');
+  const [notice, setNotice] = useState<string | null>(null);
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
@@ -25,6 +26,7 @@ export function Login() {
     setBusy(true);
     setError(null);
     try {
+      if (mode === 'forgot') { const r = await api.forgotPassword(email); setNotice(r.message); return; }
       if (mode === 'in') await signIn(email, password);
       else await signUp(email, name, password);
     } catch (err) {
@@ -43,15 +45,25 @@ export function Login() {
     <div className="auth-page">
       <form className="auth-card" onSubmit={submit}>
         <div className="brand big"><span className="logo">◆</span> Tracker</div>
-        <h1>{mode === 'in' ? 'Log in to continue' : 'Create your account'}</h1>
-        {sso?.enabled && mode === 'in' && (
+        <h1>{mode === 'in' ? 'Log in to continue' : mode === 'forgot' ? 'Reset your password' : 'Create your account'}</h1>
+        {mode === 'forgot' && (
+          <>
+            <p className="small muted">Enter your email and we’ll send you a link to choose a new password.</p>
+            <label>Email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus autoComplete="email" /></label>
+            {notice && <p className="small" role="status">{notice}</p>}
+            {error && <p className="error" role="alert">{error}</p>}
+            <button className="btn primary block" disabled={busy || !!notice}>Send reset link</button>
+            <button type="button" className="link-btn" onClick={() => { setMode('in'); setNotice(null); setError(null); }}>Back to log in</button>
+          </>
+        )}
+        {mode !== 'forgot' && sso?.enabled && mode === 'in' && (
           <>
             <button type="button" className="btn primary block" onClick={startSso} disabled={busy}>Continue with {sso.name}</button>
             {passwordVisible && <div className="auth-or" role="separator"><span>or</span></div>}
           </>
         )}
         {error && !passwordVisible && <p className="error" role="alert">{error}</p>}
-        {passwordVisible && (
+        {mode !== 'forgot' && passwordVisible && (
           <>
             <label>Email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus={!sso?.enabled} autoComplete="email" /></label>
             {mode === 'up' && <label>Full name<input value={name} onChange={(e) => setName(e.target.value)} required /></label>}
@@ -63,10 +75,11 @@ export function Login() {
             <button className={`btn ${sso?.enabled && mode === 'in' ? '' : 'primary'} block`} disabled={busy}>{busy ? 'Please wait…' : mode === 'up' ? 'Sign up' : sso?.enabled ? 'Log in with password' : 'Continue'}</button>
           </>
         )}
-        {ssoOnly && !showPassword && (
+        {mode === 'in' && passwordVisible && <button type="button" className="link-btn small" onClick={() => { setMode('forgot'); setError(null); }}>Forgot password?</button>}
+        {mode !== 'forgot' && ssoOnly && !showPassword && (
           <button type="button" className="link-btn" onClick={() => setShowPassword(true)}>Site admin? Log in with a password</button>
         )}
-        {!ssoOnly && (
+        {mode !== 'forgot' && !ssoOnly && (
           <button type="button" className="link-btn" onClick={() => { setMode(mode === 'in' ? 'up' : 'in'); setError(null); }}>
             {mode === 'in' ? 'Create an account' : 'Already have an account? Log in'}
           </button>

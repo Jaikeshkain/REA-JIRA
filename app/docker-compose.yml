@@ -1,0 +1,41 @@
+# Production-style stack: PostgreSQL + Tracker. Put secrets in app/.env (git-ignored), e.g.
+#   POSTGRES_PASSWORD=…  APP_URL=https://tracker.example.com  SMTP_URL=smtp://…  OIDC_CLIENT_SECRET=…
+# then: docker compose -f app/docker-compose.yml up -d --build
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tracker
+      POSTGRES_DB: tracker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in app/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracker -d tracker"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://tracker:${POSTGRES_PASSWORD}@db:5432/tracker
+      APP_URL: ${APP_URL:-http://localhost:4000}
+      ATTACHMENTS_DIR: /app/server/data/attachments
+      SKIP_SEED: ${SKIP_SEED:-1}
+    ports:
+      - "${TRACKER_PORT:-4000}:4000"
+    volumes:
+      - attachments:/app/server/data/attachments
+
+volumes:
+  pgdata:
+  attachments:

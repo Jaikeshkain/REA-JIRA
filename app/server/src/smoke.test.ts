@@ -1560,6 +1560,135 @@ try {
     assert.equal((await call(admin, 'DELETE', `/security-level/${lvl.id}`)).status, 204);
   });
 
+  /** The one-time link from the latest account email to this address. */
+  const linkToken = async (to: string, kind: string) => {
+    const [m] = await db.query(`SELECT text_body FROM emails WHERE to_email = $1 AND kind = $2 ORDER BY id DESC LIMIT 1`, [to, `account-${kind}`]);
+    return m ? /#token=([A-Za-z0-9_-]+)/.exec(m.text_body)![1] : null;
+  };
+
+  await test('accounts: sign-up verification, forgot/reset password, change password, idle sessions', async () => {
+    // sign-up → unverified, verification email; the link verifies once
+    const reg = await call(null, 'POST', '/auth/register', { email: 'newbie@tracker.test', displayName: 'New Bee', password: 'longenough1' });
+    assert.equal(reg.status, 201);
+    assert.equal(reg.body.user.emailVerified, false);
+    const vt = (await linkToken('newbie@tracker.test', 'verify'))!;
+    assert.ok(vt, 'verification email sent');
+    assert.equal((await db.query(`SELECT count(*)::int AS n FROM auth_tokens WHERE token_hash = $1`, [vt]))[0].n, 0, 'only hashes stored');
+    assert.equal((await call(null, 'POST', '/auth/verify', { token: vt })).status, 200);
+    assert.equal((await call(null, 'POST', '/auth/verify', { token: vt })).status, 400, 'one use');
+    assert.equal((await call(reg.body.token, 'GET', '/myself')).body.emailVerified, true);
+
+    // forgot: same answer for unknown emails; link resets once and signs out other sessions
+    const unknown = await call(null, 'POST', '/auth/forgot', { email: 'nobody@tracker.test' });
+    const known = await call(null, 'POST', '/auth/forgot', { email: 'newbie@tracker.test' });
+    assert.deepEqual(unknown.body, known.body, 'no account discovery');
+    assert.equal(await linkToken('nobody@tracker.test', 'reset'), null);
+    const rt = (await linkToken('newbie@tracker.test', 'reset'))!;
+    assert.equal((await call(null, 'POST', '/auth/reset', { token: rt, password: 'short' })).status, 400);
+    const reset = await call(null, 'POST', '/auth/reset', { token: rt, password: 'brand-new-pass-1' });
+    assert.equal(reset.status, 200);
+    assert.ok(reset.body.token);
+    assert.equal((await call(reg.body.token, 'GET', '/myself')).status, 401, 'old sessions signed out');
+    assert.equal((await call(null, 'POST', '/auth/reset', { token: rt, password: 'another-pass-2' })).status, 400, 'link used');
+    assert.equal((await call(null, 'POST', '/auth/login', { email: 'newbie@tracker.test', password: 'brand-new-pass-1' })).status, 200);
+    // SSO-only accounts get no reset email
+    await db.query(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES (1, 'ssoonly@tracker.test', 'S', '!sso')`);
+    await call(null, 'POST', '/auth/forgot', { email: 'ssoonly@tracker.test' });
+    assert.equal(await linkToken('ssoonly@tracker.test', 'reset'), null);
+
+    // change password: needs the current one; other sessions end, this one stays
+    const s1 = reset.body.token;
+    const s2 = (await call(null, 'POST', '/auth/login', { email: 'newbie@tracker.test', password: 'brand-new-pass-1' })).body.token;
+    assert.equal((await call(s1, 'POST', '/myself/password', { currentPassword: 'nope', newPassword: 'third-pass-33' })).status, 400);
+    assert.equal((await call(s1, 'POST', '/myself/password', { currentPassword: 'brand-new-pass-1', newPassword: 'third-pass-33' })).status, 200);
+    assert.equal((await call(s1, 'GET', '/myself')).status, 200);
+    assert.equal((await call(s2, 'GET', '/myself')).status, 401);
+
+    // idle timeout
+    await db.query(`UPDATE sessions SET last_seen_at = now() - interval '13 hours' WHERE token = $1`, [s1]);
+    assert.equal((await call(s1, 'GET', '/myself')).status, 401, 'idle session expired');
+  });
+
+  await test('login protection: rate limits per email (429 + Retry-After), forgot-password limit', async () => {
+    await call(null, 'POST', '/auth/register', { email: 'target@tracker.test', displayName: 'T', password: 'longenough1' });
+    for (let i = 0; i < 5; i++) assert.equal((await call(null, 'POST', '/auth/login', { email: 'target@tracker.test', password: `wrong${i}` })).status, 401);
+    const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'target@tracker.test', password: 'longenough1' }) });
+    assert.equal(res.status, 429, 'even the right password is refused while locked');
+    assert.equal(res.headers.get('retry-after'), '900');
+    assert.equal((await call(null, 'POST', '/auth/login', { email: 'dev@tracker.test', password: DEMO_USERS[0].password })).status, 200, 'other accounts unaffected');
+    await db.query(`DELETE FROM auth_failures WHERE email = 'target@tracker.test'`);
+    assert.equal((await call(null, 'POST', '/auth/login', { email: 'target@tracker.test', password: 'longenough1' })).status, 200);
+    for (let i = 0; i < 3; i++) await call(null, 'POST', '/auth/forgot', { email: 'target@tracker.test' });
+    assert.equal((await call(null, 'POST', '/auth/forgot', { email: 'target@tracker.test' })).status, 429);
+    await db.query(`DELETE FROM auth_failures`);
+  });
+
+  await test('admin users: invite → accept, deactivate/reactivate, site admin rules', async () => {
+    assert.equal((await call(dev, 'GET', '/admin/users')).status, 403);
+    const list = (await call(admin, 'GET', '/admin/users')).body;
+    assert.ok(list.some((u: any) => u.emailAddress === 'dev@tracker.test' && u.status === 'active'));
+    assert.ok(!list.some((u: any) => u.emailAddress.endsWith('@tracker.system')), 'the Automation bot is hidden');
+    const inv = await call(admin, 'POST', '/admin/users/invite', { email: 'invitee@tracker.test', displayName: 'Ivy Invitee' });
+    assert.equal(inv.status, 201);
+    assert.equal(inv.body.status, 'invited');
+    assert.equal((await call(admin, 'POST', '/admin/users/invite', { email: 'invitee@tracker.test', displayName: 'x' })).status, 400);
+    assert.equal((await call(null, 'POST', '/auth/login', { email: 'invitee@tracker.test', password: '!invited' })).status, 401, 'no usable password yet');
+    const it = (await linkToken('invitee@tracker.test', 'invite'))!;
+    assert.deepEqual((await call(null, 'GET', `/auth/invite?token=${it}`)).body, { email: 'invitee@tracker.test', displayName: 'Ivy Invitee' });
+    const acc = await call(null, 'POST', '/auth/accept-invite', { token: it, password: 'ivy-password-1', displayName: 'Ivy I.' });
+    assert.equal(acc.status, 200);
+    assert.equal(acc.body.user.displayName, 'Ivy I.');
+    assert.equal(acc.body.user.emailVerified, true);
+    assert.equal((await call(null, 'POST', '/auth/accept-invite', { token: it, password: 'again-pass-1' })).status, 400);
+
+    // deactivate: signed out everywhere, API tokens stop, can't sign in; can't deactivate yourself or the last admin
+    const ivy = acc.body.token;
+    const pat = (await call(ivy, 'POST', '/myself/tokens', { name: 'ivy script' })).body.token;
+    const id = acc.body.user.accountId;
+    assert.equal((await call(admin, 'POST', `/admin/users/${id}/deactivate`)).body.active, false);
+    assert.equal((await call(ivy, 'GET', '/myself')).status, 401);
+    assert.equal((await call(pat, 'GET', '/myself')).status, 401);
+    assert.equal((await call(null, 'POST', '/auth/login', { email: 'invitee@tracker.test', password: 'ivy-password-1' })).status, 401);
+    await call(admin, 'POST', `/admin/users/${id}/activate`);
+    assert.equal((await call(null, 'POST', '/auth/login', { email: 'invitee@tracker.test', password: 'ivy-password-1' })).status, 200);
+    assert.equal((await call(admin, 'POST', '/admin/users/1/deactivate')).status, 400, 'not yourself');
+    assert.equal((await call(admin, 'PUT', '/admin/users/1', { siteAdmin: false })).status, 400, 'keep one site admin');
+    assert.equal((await call(admin, 'PUT', `/admin/users/${id}`, { siteAdmin: true })).body.isSiteAdmin, true);
+    assert.equal((await call(admin, 'PUT', `/admin/users/${id}`, { siteAdmin: false })).body.isSiteAdmin, false);
+    const acts = (await call(admin, 'GET', '/admin/audit?maxResults=100')).body.values.map((a: any) => a.action);
+    assert.ok(['Invited a user', 'Deactivated a user', 'Reactivated a user', 'Made someone a site admin', 'Accepted an invitation'].every((a) => acts.includes(a)));
+  });
+
+  await test('groups: space access through a group, highest role wins, removal revokes, direct access kept', async () => {
+    const reg = await call(null, 'POST', '/auth/register', { email: 'grouped@tracker.test', displayName: 'Gus Grouped', password: 'longenough1' });
+    const gus = reg.body.token, gusId = reg.body.user.accountId;
+    assert.equal((await call(gus, 'GET', '/project/DEMO')).status, 404, 'no access yet');
+    const qa = (await call(admin, 'POST', '/admin/groups', { name: 'QA' })).body;
+    const leads = (await call(admin, 'POST', '/admin/groups', { name: 'Leads' })).body;
+    assert.equal((await call(admin, 'POST', '/admin/groups', { name: 'qa' })).status, 400);
+    await call(admin, 'POST', `/admin/groups/${qa.id}/members`, { accountIds: [gusId] });
+    await call(admin, 'POST', `/admin/groups/${leads.id}/members`, { accountIds: [gusId] });
+    assert.equal((await call(dev, 'POST', '/project/DEMO/groups', { groupId: qa.id, role: 'viewer' })).status, 403, 'space admins only');
+    await call(admin, 'POST', '/project/DEMO/groups', { groupId: qa.id, role: 'viewer' });
+    assert.equal((await call(gus, 'GET', '/project/DEMO')).body.myRole, 'viewer');
+    assert.equal((await call(gus, 'PATCH', '/issue/DEMO-1/fields/summary', { value: 'x' })).status, 403);
+    await call(admin, 'POST', '/project/DEMO/groups', { groupId: leads.id, role: 'member' });
+    assert.equal((await call(gus, 'GET', '/project/DEMO')).body.myRole, 'member', 'highest role wins');
+    await call(admin, 'DELETE', `/admin/groups/${leads.id}/members/${gusId}`);
+    assert.equal((await call(gus, 'GET', '/project/DEMO')).body.myRole, 'viewer');
+    await call(admin, 'DELETE', `/project/DEMO/groups/${qa.id}`);
+    assert.equal((await call(gus, 'GET', '/project/DEMO')).status, 404, 'access removed with the group');
+    // a direct member keeps their own role whatever groups say
+    await call(admin, 'POST', '/project/DEMO/groups', { groupId: qa.id, role: 'admin' });
+    await call(admin, 'POST', `/admin/groups/${qa.id}/members`, { accountIds: ['3'] }); // Vic is a direct viewer
+    assert.equal((await call(viewer, 'GET', '/project/DEMO')).body.myRole, 'viewer');
+    const groups = (await call(admin, 'GET', '/admin/groups')).body;
+    assert.deepEqual(groups.find((g: any) => g.name === 'QA').spaces, [{ key: 'DEMO', role: 'admin' }]);
+    assert.equal((await call(admin, 'DELETE', `/admin/groups/${qa.id}`)).status, 204);
+    assert.equal((await call(viewer, 'GET', '/project/DEMO')).body.myRole, 'viewer');
+    await call(admin, 'DELETE', `/admin/groups/${leads.id}`);
+  });
+
   await test('recently viewed list', async () => {
     await call(admin, 'GET', '/issue/DEMO-2');
     const r = (await call(admin, 'GET', '/recent')).body;

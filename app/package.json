@@ -10,7 +10,9 @@
     "build": "npm run build -w server && npm run build -w client",
     "seed": "npm run seed -w server",
     "test": "npm run test -w server",
-    "dev:sso": "concurrently -n idp,server,client -c magenta,blue,green \"npm run dev:idp -w server\" \"npm run dev:sso -w server\" \"npm run dev -w client\""
+    "dev:sso": "concurrently -n idp,server,client -c magenta,blue,green \"npm run dev:idp -w server\" \"npm run dev:sso -w server\" \"npm run dev -w client\"",
+    "start": "npm run start -w server",
+    "typecheck": "npm run build -w server && tsc --noEmit -p client"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

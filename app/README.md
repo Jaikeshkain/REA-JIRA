@@ -32,7 +32,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (44 checks)
+npm test           # API smoke test on an in-memory database (48 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -118,6 +118,42 @@ npm run build      # type-check server + client, production-build client
 - API: `GET|POST /api/project/:key/fields`, `PUT|DELETE /api/field/:id`; `GET /api/project/:key/workflow`,
   `POST /api/project/:key/statuses`, `PUT|DELETE /api/status/:id[?moveTo=]`, `POST /api/project/:key/transitions`,
   `PUT|DELETE /api/transition/:id`; `customfield_<id>` keys on create and `PATCH /api/issue/:key/fields/customfield_<id>`.
+
+## Accounts, administration and deployment (must-haves)
+
+- **Password reset:** "Forgot password?" on the login page emails a one-time link (1 hour). The answer is the same
+  whether or not the email has an account. Resetting signs out every other session.
+- **Email verification:** new sign-ups get a confirmation link; until they confirm, a banner offers to resend it.
+  Invited and SSO accounts are verified automatically; accounts that existed before this change count as verified.
+- **Account & password** (account menu): change your password (other devices are signed out) or sign out everywhere.
+- **Login protection:** 5 wrong passwords in 15 minutes for one email (or 20 from one IP) → `429` with `Retry-After`
+  for 15 minutes; forgot-password is limited to 3 per hour per email. Sessions end after `SESSION_IDLE_HOURS` (default
+  12) without activity and always after 14 days. One-time links store only a hash and travel in the URL fragment.
+- **Users** (Administration → Users): search everyone, **invite** by email (they set their own password from a 7-day
+  link), resend invites, **deactivate** (signed out everywhere, API tokens stop, work and history kept) and reactivate,
+  grant or remove site admin. You can't deactivate yourself or remove the last site admin.
+- **Groups** (Administration → Groups, and Space settings → Access → Groups): give a group a role in a space and all its
+  members get that access; people added later get it too, removed people lose it. Personal access is never
+  overridden, and the highest role wins when several groups apply. All of this is in the audit log.
+
+## Deploying
+
+One container serves the API and the web app on port 4000; PostgreSQL holds the data.
+
+```powershell
+# app/.env (git-ignored): POSTGRES_PASSWORD=…, APP_URL=https://tracker.example.com, SMTP_URL=…, OIDC_* …
+docker compose -f app/docker-compose.yml up -d --build
+```
+
+- Put it behind HTTPS (a reverse proxy or load balancer) and set `APP_URL` to the public address and `TRUST_PROXY=1`
+  so rate limits and the audit log see real client IPs. Several app containers can share one database.
+- Without Docker: `npm ci`, `npm run build -w client`, then `SERVE_CLIENT=1 HOST=0.0.0.0 DATABASE_URL=… npm start`.
+- **Migrations** run automatically at start-up. The demo site is only created on an empty database unless
+  `SKIP_SEED=1` (compose sets it): the first person to sign up becomes the site admin.
+- **Backups:** `docker compose exec db pg_dump -U tracker -Fc tracker > tracker.dump` (restore with `pg_restore`), plus
+  the `attachments` volume. Test a restore before you rely on it.
+- **CI** (`.github/workflows/ci.yml`): type-check, client build, smoke tests, the multi-instance test against a real
+  PostgreSQL service, and a Docker image build — on every push and pull request.
 
 ## Phase 5 (part 4): votes, JQL history, archiving, security levels
 

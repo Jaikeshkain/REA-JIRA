@@ -6,6 +6,7 @@ import type { Db } from './db.js';
 import { HttpError, h, bad } from './http.js';
 import { ssoOnly } from './oidc.js';
 import { audit, userForToken, TOKEN_PREFIX } from './audit.js';
+import { checkRate, recordFailure, IDLE_HOURS, issueToken, sendAccountEmail } from './accounts.js';
 
 export interface AuthUser {
   id: number;
@@ -14,6 +15,7 @@ export interface AuthUser {
   displayName: string;
   avatarColor: string;
   isSiteAdmin: boolean;
+  emailVerified?: boolean;
 }
 
 declare module 'express-serve-static-core' {
@@ -33,6 +35,7 @@ export const userJson = (u: AuthUser) => ({
   displayName: u.displayName,
   avatarColor: u.avatarColor,
   isSiteAdmin: u.isSiteAdmin,
+  emailVerified: u.emailVerified ?? true,
 });
 
 const rowToUser = (r: any): AuthUser => ({
@@ -42,7 +45,9 @@ const rowToUser = (r: any): AuthUser => ({
   displayName: r.display_name,
   avatarColor: r.avatar_color,
   isSiteAdmin: r.is_site_admin,
+  emailVerified: !!r.email_verified_at,
 });
+export const userJsonFromRow = (r: any) => userJson(rowToUser(r));
 
 export async function createSession(db: Db, userId: number): Promise<string> {
   const token = randomBytes(24).toString('base64url');
@@ -94,11 +99,13 @@ export function authMiddleware(db: Db) {
       }
       if (!token) return next(new HttpError(401, 'Not signed in'));
       const [row] = await db.query(
-        `SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
-         WHERE s.token = $1 AND s.expires_at > now() AND u.active`,
-        [token],
+        `SELECT u.*, s.last_seen_at FROM sessions s JOIN users u ON u.id = s.user_id
+         WHERE s.token = $1 AND s.expires_at > now() AND u.active AND s.last_seen_at > now() - $2::interval`,
+        [token, `${IDLE_HOURS()} hours`],
       );
       if (!row) return next(new HttpError(401, 'Session expired'));
+      // idle timeout: activity keeps the session alive (written at most once a minute)
+      if (Date.now() - new Date(row.last_seen_at).getTime() > 60_000) await db.query(`UPDATE sessions SET last_seen_at = now() WHERE token = $1`, [token]);
       req.user = rowToUser(row);
       req.authKind = 'session';
       next();
@@ -137,6 +144,9 @@ export function authRoutes(db: Db) {
       const exists = await db.query(`SELECT 1 FROM users WHERE tenant_id=$1 AND email=lower($2)`, [tenant.id, body.email]);
       if (exists.length) throw bad('An account with this email already exists');
       const user = await createUser(db, tenant.id, body.email, body.displayName, body.password, isFirst);
+      const [row] = await db.query(`SELECT * FROM users WHERE id = $1`, [user.id]);
+      await sendAccountEmail(db, row, 'verify', await issueToken(db, user.id, 'verify'));
+      user.emailVerified = false;
       const token = await createSession(db, user.id);
       res.status(201);
       return { token, user: userJson(user) };
@@ -146,15 +156,18 @@ export function authRoutes(db: Db) {
     '/login',
     h(async (req) => {
       const body = Login.parse(req.body);
+      await checkRate(db, 'login', body.email, req.ip);
       const [row] = await db.query(`SELECT * FROM users WHERE email = lower($1) AND active`, [body.email]);
       // SSO-only accounts have no bcrypt hash; treat them like a wrong password (no account enumeration)
       const usable = row && typeof row.password_hash === 'string' && row.password_hash.startsWith('$2');
       if (!usable || !(await bcrypt.compare(body.password, row.password_hash))) {
+        await recordFailure(db, 'login', body.email, req.ip);
         if (row) await audit(db, { tenantId: row.tenant_id, actorId: row.id, actorName: row.display_name, category: 'sign-in', action: 'Failed password sign-in', target: row.email, ip: req.ip });
         throw new HttpError(401, 'Incorrect email or password');
       }
       if (ssoOnly() && !row.is_site_admin) throw new HttpError(403, 'This site uses single sign-on. Sign in with SSO instead.');
       const token = await createSession(db, row.id);
+      await db.query(`UPDATE users SET last_login_at = now() WHERE id = $1`, [row.id]);
       await audit(db, { tenantId: row.tenant_id, actorId: row.id, actorName: row.display_name, category: 'sign-in', action: 'Signed in with password', target: row.email, ip: req.ip });
       return { token, user: userJson(rowToUser(row)) };
     }),

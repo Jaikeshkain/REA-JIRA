@@ -5,12 +5,14 @@ import { startScheduler } from './scheduler.js';
 
 // API_PORT (not PORT): dev launchers set PORT for the UI server, which would collide with Vite.
 const port = Number(process.env.API_PORT || 4000);
+// HOST=0.0.0.0 in containers; the default only accepts local connections
+const host = process.env.HOST || '127.0.0.1';
 const db = await openDb();
 await seedIfEmpty(db);
 const app = buildApp(db);
 const stopScheduler = startScheduler(db); // notification emails, subscriptions, scheduled rules, delivery
-const server = app.listen(port, '127.0.0.1', () => {
-  console.log(`Tracker API listening on http://127.0.0.1:${port} (${process.env.DATABASE_URL ? 'Postgres' : 'PGlite'})`);
+const server = app.listen(port, host, () => {
+  console.log(`Tracker listening on http://${host}:${port}${process.env.SERVE_CLIENT ? ' (API + web app)' : ''} (${process.env.DATABASE_URL ? 'Postgres' : 'PGlite'})`);
 });
 
 const shutdown = async () => {

@@ -7,6 +7,7 @@ import { ImportDialog } from '../ImportDialog';
 import { AutomationEditor } from './Automation';
 import { ComponentsEditor } from './Releases';
 import { SecurityEditor } from './Security';
+import { SpaceGroups } from './People';
 import { PageHeader, useShell } from '../Layout';
 import { Avatar, Popover, PriorityIcon, StatusLozenge, TypeIcon, fmtDate, timeAgo, useAsync } from '../ui';
 
@@ -398,6 +399,7 @@ export function Settings() {
           <button className="btn primary">Add</button>
         </form>
         {msg && <p className="muted">{msg}</p>}
+        <SpaceGroups project={project} onChange={bump} />
       </section>
       <section className="panel">
         <h2>Features</h2>
