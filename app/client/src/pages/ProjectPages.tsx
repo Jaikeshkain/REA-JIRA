@@ -5,6 +5,7 @@ import { daysLeft } from './Backlog';
 import { FieldsEditor, WorkflowEditor } from './SettingsEditors';
 import { ImportDialog } from '../ImportDialog';
 import { AutomationEditor } from './Automation';
+import { ComponentsEditor } from './Releases';
 import { PageHeader, useShell } from '../Layout';
 import { Avatar, Popover, PriorityIcon, StatusLozenge, TypeIcon, fmtDate, timeAgo, useAsync } from '../ui';
 
@@ -27,6 +28,7 @@ export function ProjectLayout() {
         <NavLink to="board">Board</NavLink>
         <NavLink to="list">List</NavLink>
         <NavLink to="timeline">Timeline</NavLink>
+        <NavLink to="releases">Releases</NavLink>
         {p.features.sprints && <NavLink to="reports">Reports</NavLink>}
         {p.myPermissions.includes('ADMINISTER_PROJECTS') && <NavLink to="settings">Settings</NavLink>}
       </nav>
@@ -362,18 +364,19 @@ export function Settings() {
       setMsg(err instanceof ApiError ? err.message : String(err));
     }
   };
-  const [tab, setTab] = useState<'access' | 'fields' | 'workflow' | 'automation'>('access');
+  const [tab, setTab] = useState<'access' | 'fields' | 'components' | 'workflow' | 'automation'>('access');
   const tabs = (
     <div className="tabs small" role="tablist" aria-label="Space settings">
-      {(['access', 'fields', 'workflow', 'automation'] as const).map((t) => (
+      {(['access', 'fields', 'components', 'workflow', 'automation'] as const).map((t) => (
         <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>
-          {{ access: 'Access & features', fields: 'Fields', workflow: 'Workflow', automation: 'Automation' }[t]}
+          {{ access: 'Access & features', fields: 'Fields', components: 'Components', workflow: 'Workflow', automation: 'Automation' }[t]}
         </button>
       ))}
     </div>
   );
   if (tab === 'fields') return <>{tabs}<FieldsEditor project={project} /></>;
   if (tab === 'automation') return <>{tabs}<AutomationEditor project={project} /></>;
+  if (tab === 'components') return <>{tabs}<ComponentsEditor project={project} /></>;
   if (tab === 'workflow') return <>{tabs}<div className="stack">{<WorkflowEditor project={project} />}</div></>;
   return (
     <>{tabs}

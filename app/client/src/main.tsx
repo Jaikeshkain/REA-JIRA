@@ -16,6 +16,7 @@ import { Filters } from './pages/Filters';
 import { DashboardList, DashboardView } from './pages/Dashboards';
 import { NotificationSettings, Outbox } from './pages/Email';
 import { ApiTokens, AuditLog, Webhooks } from './pages/Admin';
+import { Releases, VersionDetail } from './pages/Releases';
 
 function App() {
   const { user, ready } = useAuth();
@@ -35,6 +36,8 @@ function App() {
           <Route path="settings" element={<Settings />} />
           <Route path="backlog" element={<Backlog />} />
           <Route path="timeline" element={<Timeline />} />
+          <Route path="releases" element={<Releases />} />
+          <Route path="releases/:id" element={<VersionDetail />} />
           <Route path="reports" element={<Reports />} />
           <Route path="reports/:sprintId" element={<Reports />} />
         </Route>

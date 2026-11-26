@@ -28,6 +28,8 @@ export interface Issue {
     updated: string;
     watches: { watchCount: number; isWatching?: boolean };
     sprint: { id: string; name: string; state: SprintState } | null;
+    fixVersions?: { id: string; name: string; released: boolean; archived?: boolean }[];
+    components?: { id: string; name: string }[];
     issuelinks?: IssueLink[];
     attachment?: Attachment[];
   };
@@ -56,6 +58,11 @@ export interface Project {
   issueTypes: IssueType[]; statuses: (Status & { position: number })[]; members: User[]; myRole: string | null; myPermissions: string[];
   features: { sprints: boolean };
 }
+export interface Version {
+  id: string; name: string; description: string; projectId: string; startDate: string | null; releaseDate: string | null;
+  released: boolean; archived: boolean; overdue: boolean; issues?: { total: number; todo: number; inProgress: number; done: number } | null;
+}
+export interface Component { id: string; name: string; description: string; projectId: string; lead: { accountId: string; displayName: string } | null; issueCount: number }
 export interface Dependency { id: string; blocker: string; blocked: string }
 export interface LinkType { id: string; name: string; inward: string; outward: string }
 export interface LinkedIssue {
@@ -314,6 +321,16 @@ export const api = {
   createLink: (type: string, outwardKey: string, inwardKey: string) =>
     call<{ id: string }>('POST', '/issueLink', { type: { name: type }, outwardIssue: { key: outwardKey }, inwardIssue: { key: inwardKey } }),
   deleteLink: (id: string) => call('DELETE', `/issueLink/${id}`),
+  versions: (key: string) => call<Version[]>('GET', `/project/${key}/versions`),
+  version: (id: string) => call<Version>('GET', `/version/${id}`),
+  createVersion: (project: string, body: { name: string; description?: string; startDate?: string | null; releaseDate?: string | null }) => call<Version>('POST', '/version', { project, ...body }),
+  updateVersion: (id: string, body: Partial<{ name: string; description: string; startDate: string | null; releaseDate: string | null; released: boolean; archived: boolean }>) => call<Version>('PUT', `/version/${id}`, body),
+  releaseVersion: (id: string, body: { releaseDate?: string | null; moveUnresolvedTo?: string | null }) => call<Version & { moved: number }>('POST', `/version/${id}/release`, body),
+  deleteVersion: (id: string, moveTo: string | null) => call('DELETE', `/version/${id}${moveTo ? `?moveFixIssuesTo=${moveTo}` : ''}`),
+  components: (key: string) => call<Component[]>('GET', `/project/${key}/components`),
+  createComponent: (project: string, body: { name: string; description?: string; leadAccountId?: string | null }) => call<Component>('POST', '/component', { project, ...body }),
+  updateComponent: (id: string, body: Partial<{ name: string; description: string; leadAccountId: string | null }>) => call<Component>('PUT', `/component/${id}`, body),
+  deleteComponent: (id: string, moveTo: string | null) => call('DELETE', `/component/${id}${moveTo ? `?moveIssuesTo=${moveTo}` : ''}`),
   dependencies: (key: string) => call<{ dependencies: Dependency[] }>('GET', `/project/${key}/dependencies`),
   deleteAttachment: (id: string) => call('DELETE', `/attachment/${id}`),
   /** Raw-body upload; the server stores bytes as-is (max size enforced server-side). */

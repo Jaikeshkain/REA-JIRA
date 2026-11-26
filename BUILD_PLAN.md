@@ -106,6 +106,10 @@ All planned Phase 4 items are built.
 Personal API tokens (Bearer/Basic, hashed, expiry, revoke), signed webhooks with retries and SSRF protection,
 admin audit log for configuration, security and sign-in events.
 
+## Phase 5 — part 2 done: releases and components
+Versions (release with move, archive, delete with move, progress), components with leads, Fix versions /
+Components on work items with History, JQL `fixVersion` / `component` incl. released/unreleasedVersions().
+
 ## Phase 5 — candidates
-Releases (versions) and components, time tracking (worklogs), votes, WIP limits on board columns, JQL history
+Time tracking (worklogs), votes, WIP limits on board columns, JQL history
 operators (`was`, `changed`), archiving work items, issue-level security.

@@ -1257,6 +1257,111 @@ try {
     }
   });
 
+  await test('releases: versions CRUD, fix versions on work items, history, JQL, release with move, archive, delete', async () => {
+    const versions = async () => (await call(dev, 'GET', '/project/DEMO/versions')).body as any[];
+    const byName = async (n: string) => (await versions()).find((v) => v.name === n);
+    const v11 = await byName('v1.1');
+    assert.equal((await versions()).length, 3);
+    assert.equal(v11.released, false);
+    assert.ok(v11.issues.total > 0);
+    const v11Total = v11.issues.total;
+    assert.ok((await byName('v1.0')).released);
+
+    // only space admins manage versions; names unique (case-insensitive); dates ordered
+    assert.equal((await call(dev, 'POST', '/version', { project: 'DEMO', name: 'v1.2' })).status, 403);
+    assert.equal((await call(admin, 'POST', '/version', { project: 'DEMO', name: 'V1.1' })).status, 400);
+    assert.equal((await call(admin, 'POST', '/version', { project: 'DEMO', name: 'x', startDate: '2027-02-01', releaseDate: '2027-01-01' })).status, 400);
+    const v12 = (await call(admin, 'POST', '/version', { project: 'DEMO', name: 'v1.2', releaseDate: '2027-03-01' })).body;
+    assert.equal(v12.name, 'v1.2');
+
+    // members set fix versions; History records it; JSON shows it
+    const k = (await call(dev, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'Versioned', fixVersions: [{ name: 'v1.1' }], components: ['Payments'] } })).body.key;
+    let i = (await call(dev, 'GET', `/issue/${k}?expand=changelog`)).body;
+    assert.deepEqual(i.fields.fixVersions.map((v: any) => v.name), ['v1.1']);
+    assert.deepEqual(i.fields.components.map((c: any) => c.name), ['Payments']);
+    assert.equal((await call(dev, 'PATCH', `/issue/${k}/fields/fixVersions`, { operation: 'ADD', value: [{ id: v12.id }] })).status < 300, true);
+    assert.equal((await call(dev, 'PATCH', `/issue/${k}/fields/fixVersions`, { operation: 'REMOVE', value: ['v1.1'] })).status < 300, true);
+    assert.equal((await call(dev, 'PATCH', `/issue/${k}/fields/fixVersions`, { value: ['nope'] })).status, 400, 'unknown version');
+    assert.equal((await call(viewer, 'PATCH', `/issue/${k}/fields/fixVersions`, { value: ['v1.2'] })).status, 403);
+    i = (await call(dev, 'GET', `/issue/${k}?expand=changelog`)).body;
+    assert.deepEqual(i.fields.fixVersions.map((v: any) => v.name), ['v1.2']);
+    const fv = i.changelog.filter((c: any) => c.items[0].field === 'Fix Version').map((c: any) => [c.items[0].fromString, c.items[0].toString]);
+    assert.deepEqual(fv.slice(0, 2), [['v1.1, v1.2', 'v1.2'], ['v1.1', 'v1.1, v1.2']]);
+
+    // JQL
+    const jql = async (q: string) => (await call(dev, 'POST', '/search/jql', { jql: `project = DEMO AND ${q}`, maxResults: 100 })).body;
+    assert.equal((await jql('fixVersion = v1.1')).total, v11Total);
+    assert.ok((await jql('fixVersion in releasedVersions()')).issues.some((x: any) => x.key === 'DEMO-10'));
+    assert.ok((await jql('fixVersion in unreleasedVersions()')).issues.some((x: any) => x.key === k));
+    const empty = await jql('fixVersion is EMPTY');
+    assert.ok(empty.issues.every((x: any) => x.fields.fixVersions.length === 0) && empty.total > 0);
+    assert.equal((await jql('component = Payments')).total, (await call(dev, 'GET', '/project/DEMO/components')).body.find((c: any) => c.name === 'Payments').issueCount);
+    const notPay = await jql('component != Payments');
+    assert.ok(notPay.issues.every((x: any) => x.fields.components.length > 0 && !x.fields.components.some((c: any) => c.name === 'Payments')), 'Jira: != excludes empty');
+    assert.equal((await call(dev, 'POST', '/search/jql', { jql: 'component in openSprints()' })).status, 400);
+
+    // release v1.1: unfinished work moves to v1.2, finished work stays
+    const before = (await jql('fixVersion = v1.1 AND statusCategory = Done')).total;
+    const unfinished = (await jql('fixVersion = v1.1 AND statusCategory != Done')).issues.map((x: any) => x.key);
+    assert.ok(unfinished.length > 0);
+    assert.equal((await call(dev, 'POST', `/version/${v11.id}/release`, {})).status, 403);
+    const rel = await call(admin, 'POST', `/version/${v11.id}/release`, { moveUnresolvedTo: v12.id });
+    assert.equal(rel.status, 200);
+    assert.equal(rel.body.released, true);
+    assert.ok(rel.body.releaseDate);
+    assert.equal(rel.body.moved, v11Total - before);
+    assert.equal((await jql('fixVersion = v1.1')).total, before);
+    assert.equal((await jql('fixVersion = v1.1 AND statusCategory != Done')).total, 0);
+    assert.equal((await call(admin, 'POST', `/version/${v11.id}/release`, {})).status, 400, 'already released');
+    const moved = (await call(dev, 'GET', `/issue/${unfinished[0]}?expand=changelog`)).body;
+    assert.ok(moved.fields.fixVersions.some((v: any) => v.name === 'v1.2'));
+    assert.equal(moved.changelog.find((c: any) => c.items[0].field === 'Fix Version').author.displayName, 'Alex Admin');
+
+    // archived versions can't be newly set; delete moves work
+    const v10 = await byName('v1.0');
+    await call(admin, 'PUT', `/version/${v10.id}`, { archived: true });
+    assert.equal((await call(dev, 'PATCH', `/issue/${k}/fields/fixVersions`, { operation: 'ADD', value: ['v1.0'] })).status, 400);
+    const v20 = await byName('v2.0');
+    const in20 = (await jql('fixVersion = v2.0')).total;
+    assert.equal((await call(admin, 'DELETE', `/version/${v20.id}?moveFixIssuesTo=${v12.id}`)).status, 204);
+    assert.equal((await versions()).length, 3);
+    assert.equal((await jql('fixVersion = v1.2')).total, (await byName('v1.2')).issues.total);
+    assert.ok(in20 > 0);
+
+    // other spaces' versions can't be used; outsiders can't see versions
+    const out = (await call(null, 'POST', '/auth/login', { email: 'out2@tracker.test', password: 'longenough1' })).body.token;
+    assert.equal((await call(out, 'GET', '/project/DEMO/versions')).status, 404);
+    assert.equal((await call(out, 'GET', `/version/${v12.id}`)).status, 404);
+  });
+
+  await test('components: CRUD, lead must be a member, delete moves work, columns + audit', async () => {
+    const comps = async () => (await call(dev, 'GET', '/project/DEMO/components')).body as any[];
+    const pay = (await comps()).find((c) => c.name === 'Payments');
+    assert.equal(pay.lead.displayName, 'Dana Dev');
+    assert.ok(pay.issueCount > 0);
+    assert.equal((await call(dev, 'POST', '/component', { project: 'DEMO', name: 'API' })).status, 403, 'space admins only');
+    assert.equal((await call(admin, 'POST', '/component', { project: 'DEMO', name: 'API', leadAccountId: 999 })).status, 400);
+    const api = (await call(admin, 'POST', '/component', { project: 'DEMO', name: 'API', leadAccountId: '2' })).body;
+    assert.equal(api.lead.displayName, 'Dana Dev');
+    assert.equal((await call(admin, 'POST', '/component', { project: 'DEMO', name: 'api' })).status, 400, 'unique');
+    const ck = (await call(dev, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'Component move' } })).body.key;
+    await call(dev, 'PATCH', `/issue/${ck}/fields/components`, { operation: 'ADD', value: ['Payments'] });
+    const payCount = (await comps()).find((c) => c.name === 'Payments').issueCount;
+    assert.equal((await call(admin, 'DELETE', `/component/${pay.id}?moveIssuesTo=${api.id}`)).status, 204);
+    const after = await comps();
+    assert.ok(!after.some((c) => c.name === 'Payments'));
+    assert.equal(after.find((c) => c.name === 'API').issueCount, payCount);
+    const i9 = (await call(dev, 'GET', `/issue/${ck}?expand=changelog`)).body;
+    assert.deepEqual(i9.fields.components.map((c: any) => c.name), ['API']);
+
+    const cols = (await call(dev, 'GET', '/search/columns')).body.columns.map((c: any) => c.id);
+    assert.ok(cols.includes('fixVersions') && cols.includes('components'));
+    const table = (await call(dev, 'POST', '/search/table', { jql: `key = ${ck}`, columns: ['key', 'fixVersions', 'components'] })).body;
+    assert.deepEqual(table.issues[0].fields.components.map((c: any) => c.name), ['API']);
+    const acts = (await call(admin, 'GET', '/admin/audit?category=releases')).body.values.map((a: any) => a.action);
+    assert.ok(acts.includes('Released a version') && acts.some((a: string) => a.startsWith('Changed components')));
+  });
+
   await test('recently viewed list', async () => {
     await call(admin, 'GET', '/issue/DEMO-2');
     const r = (await call(admin, 'GET', '/recent')).body;

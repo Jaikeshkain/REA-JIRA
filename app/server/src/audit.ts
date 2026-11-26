@@ -21,7 +21,7 @@ export const hashToken = (t: string) => createHash('sha256').update(t).digest('h
 
 // ------------------------------------------------------------------ audit
 
-export type AuditCategory = 'spaces' | 'permissions' | 'workflow' | 'fields' | 'automation' | 'webhooks' | 'security' | 'admin' | 'sign-in';
+export type AuditCategory = 'spaces' | 'permissions' | 'workflow' | 'fields' | 'automation' | 'webhooks' | 'security' | 'admin' | 'sign-in' | 'releases';
 
 export async function audit(
   db: Db,
@@ -52,6 +52,9 @@ const RULES: [RegExp, string | null, AuditCategory, string][] = [
   [/^\/api\/project\/([^/]+)\/automation/, null, 'automation', 'Changed automation rules'],
   [/^\/api\/automation\/\d+/, null, 'automation', 'Changed automation rules'],
   [/^\/api\/admin\/scheduler\/run$/, 'POST', 'admin', 'Ran the scheduler'],
+  [/^\/api\/version\/\d+\/release$/, 'POST', 'releases', 'Released a version'],
+  [/^\/api\/version(\/\d+)?$/, null, 'releases', 'Changed versions'],
+  [/^\/api\/component(\/\d+)?$/, null, 'releases', 'Changed components'],
 ];
 const methodVerb: Record<string, string> = { POST: 'created', PUT: 'updated', PATCH: 'updated', DELETE: 'deleted' };
 

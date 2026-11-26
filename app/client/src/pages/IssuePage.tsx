@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { MultiRefField } from './Releases';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, ApiError, type AutomationRun, type Comment, type Issue, type Priority, type Sprint, type Transition, type User } from '../api';
 import { BUILTIN_LABELS, BuiltinInput, CustomFieldInput, inputValue, isMissing, rawValue } from '../fields';
@@ -266,6 +267,12 @@ export function IssuePage() {
                 ))}
                 {can('EDIT_ISSUES') && <LabelAdder onAdd={(l) => edit('labels', [l], 'ADD')} />}
               </div>
+            </Field>
+            <Field label="Fix versions">
+              <MultiRefField kind="fixVersions" issue={issue} canEdit={can('EDIT_ISSUES')} onEdit={edit} />
+            </Field>
+            <Field label="Components">
+              <MultiRefField kind="components" issue={issue} canEdit={can('EDIT_ISSUES')} onEdit={edit} />
             </Field>
             <Field label="Due date">
               <input type="date" value={f.duedate ?? ''} disabled={!can('EDIT_ISSUES')} aria-label="Due date" onChange={(e) => edit('duedate', e.target.value || null)} />

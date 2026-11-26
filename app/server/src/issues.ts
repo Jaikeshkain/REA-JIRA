@@ -16,6 +16,7 @@ import { transitionsFor, applyTransition, trJson } from './workflow.js';
 import { appliesTo, cfKey, fieldJson, fieldsOf, jqlCtx, normalise, setValue, valuesFor } from './customfields.js';
 import { linksFor } from './links.js';
 import { attachmentsFor, type FileStore } from './attachments.js';
+import { setRelation, REL } from './versions.js';
 
 // ------------------------------------------------------------------ shaping
 
@@ -28,7 +29,11 @@ const SELECT = `
          r.display_name AS r_name, r.email AS r_email, r.avatar_color AS r_color,
          par.key AS parent_key, par.summary AS parent_summary, part.name AS parent_type,
          sp.name AS sp_name, sp.state AS sp_state,
-         (SELECT count(*)::int FROM watchers w WHERE w.issue_id = i.id) AS watch_count`;
+         (SELECT count(*)::int FROM watchers w WHERE w.issue_id = i.id) AS watch_count,
+         (SELECT coalesce(json_agg(json_build_object('id', v.id::text, 'name', v.name, 'released', v.released, 'archived', v.archived) ORDER BY v.position, v.id), '[]'::json)
+            FROM issue_versions iv JOIN versions v ON v.id = iv.version_id WHERE iv.issue_id = i.id) AS fix_versions,
+         (SELECT coalesce(json_agg(json_build_object('id', c.id::text, 'name', c.name) ORDER BY lower(c.name), c.id), '[]'::json)
+            FROM issue_components ic JOIN components c ON c.id = ic.component_id WHERE ic.issue_id = i.id) AS components`;
 export const SELECT_FROM = `${SELECT} ${FROM}
   LEFT JOIN issues par ON par.id = i.parent_id
   LEFT JOIN issue_types part ON part.id = par.type_id`;
@@ -65,6 +70,8 @@ export function issueJson(r: any) {
       rank: r.rank,
       watches: { watchCount: r.watch_count ?? 0 },
       sprint: r.sprint_id ? { id: String(r.sprint_id), name: r.sp_name, state: r.sp_state } : null,
+      fixVersions: r.fix_versions ?? [],
+      components: r.components ?? [],
     },
   };
 }
@@ -83,7 +90,7 @@ export async function loadIssue(db: Db, user: AuthUser, key: string) {
 const lastChangeId = async (db: Db, issueId: number) =>
   Number((await db.query(`SELECT coalesce(max(id), 0) AS m FROM changelog WHERE issue_id = $1`, [issueId]))[0].m);
 
-async function logChange(
+export async function logChange(
   q: Db, issueId: number, actorId: number, field: string,
   from: { v?: unknown; s?: unknown }, to: { v?: unknown; s?: unknown },
 ) {
@@ -123,6 +130,8 @@ const CreateIssue = z.object({
     startdate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
     storypoints: z.number().nonnegative().nullish(),
     sprint: z.object({ id: z.union([z.string(), z.number()]) }).nullish(),
+    fixVersions: z.array(z.any()).optional(),
+    components: z.array(z.any()).optional(),
   }).passthrough(), // customfield_<id> keys are validated against the space's fields
   watchers: z.array(z.union([z.string(), z.number()])).optional(),
 });
@@ -238,6 +247,9 @@ export async function createIssue(db: Db, user: AuthUser, input: unknown): Promi
       await q.query(`INSERT INTO watchers (issue_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [row.id, w]);
     }
     if (assignee?.id) await notify(q, { actorId: user.id, issueId: row.id, kind: 'assigned', recipients: [assignee.id] });
+    const target = { id: row.id, project_id: project.id };
+    if (fields.fixVersions?.length) await setRelation(q, user.id, target, 'versions', 'SET', fields.fixVersions, logChange);
+    if (fields.components?.length) await setRelation(q, user.id, target, 'components', 'SET', fields.components, logChange);
     await logChange(q, row.id, user.id, 'created', {}, { v: row.id, s: key });
     return { id: row.id, key };
   });
@@ -290,6 +302,9 @@ export async function editField(db: Db, user: AuthUser, key: string, fieldId: st
         ]);
         if (!pr) throw bad('Invalid priority');
         return set('priority_id', pr.id, { v: row.priority_id, s: row.pr_name }, { v: pr.id, s: pr.name });
+      }
+      case 'fixversions': case 'fixversion': case 'components': case 'component': {
+        return setRelation(q, user.id, row, field.startsWith('fix') ? 'versions' : 'components', operation, value, logChange);
       }
       case 'labels': {
         const items = z.array(z.string().trim().min(1).regex(/^\S+$/)).parse(Array.isArray(value) ? value : [value]);
@@ -360,7 +375,8 @@ export async function editField(db: Db, user: AuthUser, key: string, fieldId: st
     }
   });
   await fireAutomation(db, { type: 'field_changed', issueId: row.id, actorId: user.id, field });
-  await emitWebhook(db, 'issue_updated', user, { issueId: row.id, changelog: { field, afterId } });
+  const logged = field.startsWith('fixversion') ? REL.versions.field : field.startsWith('component') ? REL.components.field : field;
+  await emitWebhook(db, 'issue_updated', user, { issueId: row.id, changelog: { field: logged, afterId } });
 }
 
 /** Move a work item by transition id (conditions + validators apply). Fires automation after commit. */

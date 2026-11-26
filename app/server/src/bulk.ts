@@ -61,6 +61,8 @@ const BUILTIN_COLUMNS: Record<string, { label: string; get: (i: any) => unknown 
   assignee: { label: 'Assignee', get: (i) => i.fields.assignee?.displayName },
   reporter: { label: 'Reporter', get: (i) => i.fields.reporter?.displayName },
   labels: { label: 'Labels', get: (i) => i.fields.labels.join(' ') },
+  fixVersions: { label: 'Fix versions', get: (i) => (i.fields.fixVersions ?? []).map((v: any) => v.name).join(', ') },
+  components: { label: 'Components', get: (i) => (i.fields.components ?? []).map((c: any) => c.name).join(', ') },
   parent: { label: 'Parent', get: (i) => i.fields.parent?.key },
   sprint: { label: 'Sprint', get: (i) => i.fields.sprint?.name },
   storypoints: { label: 'Story points', get: (i) => i.fields.storypoints },

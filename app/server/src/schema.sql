@@ -468,3 +468,41 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS audit_log_tenant ON audit_log (tenant_id, id DESC);
+
+-- ---------------------------------------------------------------- Phase 5: releases (versions) + components
+CREATE TABLE IF NOT EXISTS versions (
+  id            SERIAL PRIMARY KEY,
+  project_id    INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  description   TEXT NOT NULL DEFAULT '',
+  start_date    DATE,
+  release_date  DATE,
+  released      BOOLEAN NOT NULL DEFAULT false,
+  released_at   TIMESTAMPTZ,
+  archived      BOOLEAN NOT NULL DEFAULT false,
+  position      INT NOT NULL DEFAULT 0,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS versions_name ON versions (project_id, lower(name));
+CREATE TABLE IF NOT EXISTS issue_versions (
+  issue_id    INT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+  version_id  INT NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
+  PRIMARY KEY (issue_id, version_id)
+);
+CREATE INDEX IF NOT EXISTS issue_versions_version ON issue_versions (version_id);
+CREATE TABLE IF NOT EXISTS components (
+  id           SERIAL PRIMARY KEY,
+  project_id   INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  lead_id      INT REFERENCES users(id) ON DELETE SET NULL,
+  position     INT NOT NULL DEFAULT 0,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS components_name ON components (project_id, lower(name));
+CREATE TABLE IF NOT EXISTS issue_components (
+  issue_id      INT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+  component_id  INT NOT NULL REFERENCES components(id) ON DELETE CASCADE,
+  PRIMARY KEY (issue_id, component_id)
+);
+CREATE INDEX IF NOT EXISTS issue_components_component ON issue_components (component_id);

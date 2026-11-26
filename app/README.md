@@ -32,7 +32,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (36 checks)
+npm test           # API smoke test on an in-memory database (38 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -118,6 +118,22 @@ npm run build      # type-check server + client, production-build client
 - API: `GET|POST /api/project/:key/fields`, `PUT|DELETE /api/field/:id`; `GET /api/project/:key/workflow`,
   `POST /api/project/:key/statuses`, `PUT|DELETE /api/status/:id[?moveTo=]`, `POST /api/project/:key/transitions`,
   `PUT|DELETE /api/transition/:id`; `customfield_<id>` keys on create and `PATCH /api/issue/:key/fields/customfield_<id>`.
+
+## Phase 5 (part 2): releases and components
+
+- **Releases tab** in each space: versions with status (unreleased / released / archived), start and release dates
+  (overdue ones flagged), and a progress bar of their work (done / in progress / to do, with the numbers beside it).
+  Click a version for its work items.
+- **Release** a version: unfinished work can move to another unreleased version in the same step. Unrelease, archive
+  (archived versions can't be newly set on work), edit, and delete (its work can move to another version) too.
+  Managing versions needs the space admin role (`MANAGE_VERSIONS`).
+- **Components** (Space settings → Components): name, description and an optional lead (must be a space member);
+  deleting one can move its work to another component.
+- **On work items:** *Fix versions* and *Components* fields (add/remove on the work item page, or `fields.fixVersions` /
+  `fields.components` in the API); every change is in History. Both are columns in Search and CSV export.
+- **JQL:** `fixVersion = v1.1`, `fixVersion in unreleasedVersions()` / `releasedVersions()`, `fixVersion is EMPTY`,
+  `component in (Payments, "Web app")`, `component != Payments` (Jira semantics: excludes work with no component).
+- Version and component changes are in the audit log under *releases*.
 
 ## Phase 5 (part 1): API tokens, webhooks, audit log
 

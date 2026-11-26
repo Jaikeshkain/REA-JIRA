@@ -542,3 +542,18 @@ code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
 .secret-box p { margin: 0; }
 .secret-row { display: flex; gap: 8px; align-items: center; }
 .secret-value { flex: 1; min-width: 0; overflow-wrap: anywhere; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; font-size: 13px; }
+
+/* ---------- releases (Phase 5) ---------- */
+.prog { display: inline-flex; align-items: center; gap: 8px; min-width: 160px; }
+.prog-bar { display: flex; gap: 2px; flex: 1; height: 8px; min-width: 100px; }
+.prog-seg { border-radius: 4px; min-width: 4px; }
+.prog-seg.done { background: var(--done-fg); }
+.prog-seg.prog { background: var(--prog-fg); }
+.prog-seg.todo { background: var(--todo-bg); }
+.prog-cell { min-width: 180px; }
+.prog-wide .prog { min-width: 260px; }
+.desc-cell { max-width: 260px; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center; font-size: 14px; }
+.facts b { color: var(--text-subtle); font-weight: 600; margin-right: 4px; }
+.crumbs a { color: var(--text-subtle); }
+.strong { font-weight: 600; }

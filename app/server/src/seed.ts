@@ -104,6 +104,19 @@ export async function seed(db: Db) {
     await q.query(`INSERT INTO issue_links (type_id, outward_issue_id, inward_issue_id, created_by) VALUES ($1,$2,$3,$4),($5,$6,$7,$4)`, [
       lt.Blocks, ids[10], ids[5], admin.id, lt.Relates, ids[7], ids[6],
     ]);
+    // ---- Phase 5 demo: releases + components
+    const relDay = (n: number) => new Date(Date.now() + n * 86400_000).toISOString().slice(0, 10);
+    const [v10] = await q.query(`INSERT INTO versions (project_id, name, description, start_date, release_date, released, released_at, position) VALUES ($1,'v1.0','First public release',$2,$3,true,now(),1) RETURNING id`, [p.id, relDay(-60), relDay(-30)]);
+    const [v11] = await q.query(`INSERT INTO versions (project_id, name, description, start_date, release_date, position) VALUES ($1,'v1.1','Wallet and notifications',$2,$3,2) RETURNING id`, [p.id, relDay(-14), relDay(14)]);
+    const [v20] = await q.query(`INSERT INTO versions (project_id, name, description, position) VALUES ($1,'v2.0','Analytics',3) RETURNING id`, [p.id]);
+    const [cPay] = await q.query(`INSERT INTO components (project_id, name, description, lead_id) VALUES ($1,'Payments','Wallet, billing and transactions',$2) RETURNING id`, [p.id, dev.id]);
+    const [cWeb] = await q.query(`INSERT INTO components (project_id, name, description, lead_id) VALUES ($1,'Web app','Browser UI',$2) RETURNING id`, [p.id, admin.id]);
+    for (const [n, v] of [[10, v10], [6, v11], [7, v11], [9, v11], [11, v11], [8, v20], [2, v20]] as const) {
+      await q.query(`INSERT INTO issue_versions (issue_id, version_id) VALUES ($1,$2)`, [ids[n - 1], v.id]);
+    }
+    for (const [n, c] of [[7, cPay], [8, cPay], [11, cWeb], [3, cWeb]] as const) {
+      await q.query(`INSERT INTO issue_components (issue_id, component_id) VALUES ($1,$2)`, [ids[n - 1], c.id]);
+    }
     // ---- Phase 3 demo: shared filters + a team dashboard
     const filter = async (name: string, jql: string, description: string) => {
       const [f] = await q.query(

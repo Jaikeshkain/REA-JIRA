@@ -309,6 +309,26 @@ export function compile(q: Query, ctx: Ctx, params: unknown[]): { where: string;
       }
       case 'parent':
         return many('i.parent_id', (v) => `(SELECT id FROM issues WHERE tenant_id = ${P(ctx.tenantId)} AND upper(key) = upper(${P(lit(v))}))`);
+      case 'fixversion': case 'fixversions': case 'component': case 'components': {
+        const isV = field.startsWith('fix');
+        const [link, col, ent] = isV ? ['issue_versions', 'version_id', 'versions'] : ['issue_components', 'component_id', 'components'];
+        const anyRow = `EXISTS (SELECT 1 FROM ${link} x WHERE x.issue_id = i.id)`;
+        if (isEmpty) return op === 'is' ? `NOT ${anyRow}` : anyRow;
+        if (!['=', '!=', 'in', 'not in'].includes(op)) throw bad(`JQL: operator ${op} not supported for ${isV ? 'fixVersion' : 'component'}`);
+        const has = (cond: string) => `EXISTS (SELECT 1 FROM ${link} x JOIN ${ent} e ON e.id = x.${col} WHERE x.issue_id = i.id AND ${cond})`;
+        const conds = values.map((v) => {
+          if (v.kind === 'empty') return `NOT ${anyRow}`;
+          if (v.kind === 'fn') {
+            const f = isV ? { releasedversions: 'e.released', unreleasedversions: 'NOT e.released AND NOT e.archived' }[v.name] : undefined;
+            if (!f) throw bad(`JQL: unsupported function ${v.name}() for ${isV ? 'fixVersion' : 'component'}`);
+            return has(f);
+          }
+          return /^\d+$/.test(v.v) ? has(`(e.id = ${P(Number(v.v))} OR lower(e.name) = lower(${P(v.v)}))`) : has(`lower(e.name) = lower(${P(v.v)})`);
+        });
+        const any = `(${conds.join(' OR ')})`;
+        const hasEmpty = values.some((v) => v.kind === 'empty');
+        return neg ? `(NOT ${any} AND ${hasEmpty ? 'TRUE' : anyRow})` : any;
+      }
       case 'labels': case 'label': {
         if (isEmpty) return `cardinality(i.labels) ${op === 'is' ? '=' : '>'} 0`;
         const list = values.map(lit);
