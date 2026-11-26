@@ -111,6 +111,6 @@ export async function startMockIdp(opts: { port?: number; clientId?: string; cli
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const idp = await startMockIdp({ port: Number(process.env.IDP_PORT ?? 4100) });
+  const idp = await startMockIdp({ port: Number(process.env.IDP_PORT || 4100) });
   console.log(`Mock OIDC provider on ${idp.issuer} (client id "${idp.clientId}", secret "${idp.clientSecret}") — development only`);
 }

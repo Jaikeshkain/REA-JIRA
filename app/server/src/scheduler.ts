@@ -6,6 +6,7 @@
  *   3. scheduled automation rules.
  *   4. delivery of queued emails (SMTP or the dev outbox).
  * All "what's due" state lives in the database (next_run_at, emailed_at), so restarts don't lose or repeat work.
+ * With several server instances, each pass runs under a Postgres advisory lock, so only one instance works at a time.
  */
 import { Router } from 'express';
 import { z } from 'zod';
@@ -18,7 +19,7 @@ import { loadFilter } from './filters.js';
 import { APP_URL, deliver, esc, frame, mailMode, queueEmail } from './mail.js';
 import { runScheduledRule } from './automation.js';
 
-const DIGEST_HOUR_UTC = Number(process.env.DIGEST_HOUR_UTC ?? 8);
+const DIGEST_HOUR_UTC = Number(process.env.DIGEST_HOUR_UTC || 8);
 const BATCH_WINDOW_MS = 60_000;
 
 const sentence = (n: any) => {
@@ -147,16 +148,23 @@ async function scheduledRules(db: Db, now: Date) {
 }
 
 let running = false;
-/** One scheduler pass. Safe to call any time; overlapping calls are skipped. */
+/** Advisory lock id for the scheduler ("trak"); any instance holding it is the one doing the work. */
+export const SCHEDULER_LOCK = 0x7472616b;
+/** One scheduler pass. Safe to call any time; overlapping calls (here or on another instance) are skipped. */
 export async function tick(db: Db, now = new Date()) {
-  if (running) return { skipped: true };
+  if (running) return { skipped: true as const };
   running = true;
   try {
-    const notifications = await notificationEmails(db, now);
-    const subscriptions = await filterSubscriptions(db, now);
-    const rules = await scheduledRules(db, now);
-    const delivery = await deliver(db, now);
-    return { notifications, subscriptions, rules, delivery };
+    const pass = async () => {
+      const notifications = await notificationEmails(db, now);
+      const subscriptions = await filterSubscriptions(db, now);
+      const rules = await scheduledRules(db, now);
+      const delivery = await deliver(db, now);
+      return { notifications, subscriptions, rules, delivery };
+    };
+    if (!db.withLock) return await pass();
+    const r = await db.withLock(SCHEDULER_LOCK, pass);
+    return r.ran ? r.value : { skipped: true as const };
   } finally {
     running = false;
   }

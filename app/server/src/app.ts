@@ -23,7 +23,7 @@ import { oidcConfigFromEnv, oidcRoutes, type OidcConfig } from './oidc.js';
 const here = dirname(fileURLToPath(import.meta.url));
 
 export function buildApp(db: Db, opts: { attachmentsDir?: string; oidc?: OidcConfig | null } = {}) {
-  const store = new FileStore(opts.attachmentsDir ?? process.env.ATTACHMENTS_DIR ?? join(here, '..', 'data', 'attachments'));
+  const store = new FileStore(opts.attachmentsDir || process.env.ATTACHMENTS_DIR || join(here, '..', 'data', 'attachments'));
   const app = express();
   app.disable('x-powered-by');
   const json = express.json({ limit: '1mb' });

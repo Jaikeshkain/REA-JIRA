@@ -11,6 +11,11 @@ npm run dev        # API on http://127.0.0.1:4000, UI on http://localhost:5173
 ```
 
 The first start creates an embedded Postgres (PGlite) database in `server/data/` and seeds a demo site.
+
+**Settings and secrets** live in `app/server/.env`, loaded automatically by `npm run dev`, `start` and `seed`.
+It is ignored by git; `app/server/.env.example` (committed) lists every option with its default. Put database
+passwords, the SMTP URL and the SSO client secret only in `.env`. Real environment variables override the file,
+and `npm test` never reads it.
 To use a real PostgreSQL server instead, set `DATABASE_URL` before starting, e.g.
 `$env:DATABASE_URL = "postgres://user:pass@localhost:5432/tracker"`.
 
@@ -27,7 +32,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (32 checks)
+npm test           # API smoke test on an in-memory database (33 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -114,6 +119,22 @@ npm run build      # type-check server + client, production-build client
   `POST /api/project/:key/statuses`, `PUT|DELETE /api/status/:id[?moveTo=]`, `POST /api/project/:key/transitions`,
   `PUT|DELETE /api/transition/:id`; `customfield_<id>` keys on create and `PATCH /api/issue/:key/fields/customfield_<id>`.
 
+## Phase 4 (part 7): running several server instances
+
+Run as many API instances as you like behind a load balancer, all pointing at the same PostgreSQL (`DATABASE_URL`):
+
+- **Live updates cross instances.** Every event also goes out on Postgres `NOTIFY` (channel `tracker_events`); each
+  instance `LISTEN`s on its own connection. A change made through one instance reaches browsers connected to any
+  other, exactly once (an instance delivers its own events directly and ignores their echo). Large events are split
+  to stay under the 8 KB NOTIFY limit. No sticky sessions or extra services (Redis) are needed.
+- **Self-healing.** If the listener connection drops (database restart or failover), it reconnects with backoff and
+  tells connected browsers to refetch, since events may have been missed.
+- **One scheduler at a time.** Each scheduler pass runs under a Postgres advisory lock: instances that find it taken
+  skip that minute, so emails, subscriptions and scheduled rules never run twice.
+- **Test it:** `DATABASE_URL=postgres://… npm --prefix server run test:multi` runs two independent instances against a
+  real Postgres (cross-instance delivery, pings, large events, scheduler lock, killed listener connection).
+  The embedded PGlite database is single-process; it uses the same code paths, covered by `npm test`.
+
 ## Phase 4 (part 6): single sign-on (OpenID Connect)
 
 - **Continue with SSO** on the login page works with any OpenID Connect provider (Okta, Microsoft Entra ID, Google,
@@ -180,8 +201,7 @@ npm run build      # type-check server + client, production-build client
 - **After commit only:** events are published when a write request finishes successfully, so a failed or rolled-back
   change never triggers refreshes. Every write route is covered generically (work items, comments, links,
   attachments, sprints, workflow, fields, automation, bulk, import); deletes are resolved before the rows go.
-- Limits: in-process hub (one server instance; a multi-instance deployment would add Redis/Postgres LISTEN/NOTIFY),
-  max 8 streams per person, 25 s heartbeats.
+- Limits: max 8 streams per person, 25 s heartbeats. Several server instances are supported (see part 7).
 
 ## Phase 4 (part 2): working in bulk
 

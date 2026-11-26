@@ -8,8 +8,8 @@
 import nodemailer from 'nodemailer';
 import type { Db } from './db.js';
 
-export const APP_URL = (process.env.APP_URL ?? 'http://localhost:5173').replace(/\/$/, '');
-const FROM = process.env.MAIL_FROM ?? 'Tracker <no-reply@tracker.local>';
+export const APP_URL = (process.env.APP_URL || 'http://localhost:5173').replace(/\/$/, '');
+const FROM = process.env.MAIL_FROM || 'Tracker <no-reply@tracker.local>';
 const MAX_ATTEMPTS = 5;
 
 export const esc = (s: unknown) =>

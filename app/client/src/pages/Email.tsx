@@ -136,7 +136,7 @@ export function Outbox() {
     setBusy(true);
     try {
       const r = await api.runScheduler();
-      toast('skipped' in r ? 'The scheduler is already running' : `Scheduler ran: ${r.notifications} notification email(s), ${r.subscriptions} subscription(s), ${r.rules.items} rule item(s), ${r.delivery.sent} delivered`);
+      toast('skipped' in r ? 'The scheduler is already running (here or on another server)' : `Scheduler ran: ${r.notifications} notification email(s), ${r.subscriptions} subscription(s), ${r.rules.items} rule item(s), ${r.delivery.sent} delivered`);
       await load();
     } catch (e) { toast(e instanceof ApiError ? e.message : String(e)); }
     setBusy(false);

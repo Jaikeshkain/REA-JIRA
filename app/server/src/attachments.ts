@@ -15,7 +15,7 @@ import { h, bad, notFound, forbidden } from './http.js';
 import { roleIn, userRef } from './access.js';
 import { can } from './permissions.js';
 
-export const MAX_ATTACHMENT_BYTES = Number(process.env.MAX_ATTACHMENT_MB ?? 10) * 1024 * 1024;
+export const MAX_ATTACHMENT_BYTES = Number(process.env.MAX_ATTACHMENT_MB || 10) * 1024 * 1024;
 const INLINE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
 export class FileStore {

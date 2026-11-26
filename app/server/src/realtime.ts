@@ -8,7 +8,12 @@
  *   permission-checked API, so the stream never carries issue content.
  * - Change events are published only after a write request has finished successfully (status < 400),
  *   i.e. after its transaction committed, so a failed or rolled-back change never triggers refreshes.
+ * - Several server instances: every event also goes out on Postgres NOTIFY (channel `tracker_events`) and each
+ *   instance LISTENs, so a change made through one instance reaches browsers connected to any other. An instance
+ *   delivers its own events directly and ignores their echo; big events are split to stay under NOTIFY's 8 KB
+ *   payload limit. If the listener connection drops, it reconnects and tells connected browsers to refresh.
  */
+import { randomUUID } from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type { Db } from './db.js';
 import type { AuthUser } from './auth.js';
@@ -19,14 +24,65 @@ type Sub = { id: number; user: AuthUser; res: Response; projects: Set<number>; r
 const HEARTBEAT_MS = 25_000;
 const MEMBERSHIP_TTL_MS = 30_000;
 const MAX_STREAMS_PER_USER = 8;
+export const BUS_CHANNEL = 'tracker_events';
+const KEYS_PER_MESSAGE = 100; // keeps each NOTIFY payload well under 8000 bytes
+const IDS_PER_MESSAGE = 200;
+
+type BusMessage =
+  | { i: string; k: 'change'; tenantId: number; projectId: number; ev: ChangeEvent }
+  | { i: string; k: 'ping'; users: number[] }
+  | { i: string; k: 'inv'; userId?: number };
+
+const chunk = <T,>(a: T[], n: number): T[][] =>
+  a.length ? Array.from({ length: Math.ceil(a.length / n) }, (_, j) => a.slice(j * n, (j + 1) * n)) : [a];
+
+// Any open hub will do for pings: they reach other instances (and other hubs in this process) through the bus.
+const hubs = new Set<Hub>();
 
 export class Hub {
   private subs = new Map<number, Sub>();
   private seq = 0;
   private timer: NodeJS.Timeout;
+  private unlisten: (() => Promise<void>) | null = null;
+  private closed = false;
+  readonly instanceId = randomUUID();
+  /** Resolves once this instance listens on the bus (or immediately if the database has no LISTEN). */
+  readonly ready: Promise<void>;
   constructor(private db: Db) {
     this.timer = setInterval(() => this.broadcastRaw(': ping\n\n'), HEARTBEAT_MS);
     this.timer.unref?.();
+    hubs.add(this);
+    this.ready = (async () => {
+      if (!db.listen) return;
+      try {
+        const off = await db.listen(BUS_CHANNEL, (p) => this.onBus(p), () => this.resync());
+        if (this.closed) await off(); else this.unlisten = off;
+      } catch (e) {
+        console.error('realtime: could not LISTEN; live updates stay on this instance only', e);
+      }
+    })();
+  }
+
+  // ---- bus: events from other instances
+  private onBus(payload: string) {
+    let m: BusMessage;
+    try { m = JSON.parse(payload); } catch { return; }
+    if (!m || m.i === this.instanceId) return; // our own echo: already delivered locally
+    if (m.k === 'change') this.deliverChange(m.tenantId, m.projectId, m.ev).catch((e) => console.error('realtime deliver failed', e));
+    else if (m.k === 'ping') m.users.forEach((u) => this.deliverPing(u));
+    else if (m.k === 'inv') this.deliverInvalidate(m.userId);
+  }
+  private async send(m: { k: 'change'; tenantId: number; projectId: number; ev: ChangeEvent } | { k: 'ping'; users: number[] } | { k: 'inv'; userId?: number }) {
+    if (!this.db.listen || this.closed) return;
+    try {
+      await this.db.query('SELECT pg_notify($1, $2)', [BUS_CHANNEL, JSON.stringify({ ...m, i: this.instanceId })]);
+    } catch (e) {
+      console.error('realtime: NOTIFY failed', e);
+    }
+  }
+  /** After a listener gap anything may have changed, so connected browsers refetch. */
+  private resync() {
+    for (const s of this.subs.values()) { s.refreshed = 0; this.write(s, 'resync', {}); }
   }
 
   get size() { return this.subs.size; }
@@ -68,8 +124,12 @@ export class Hub {
     for (const s of this.subs.values()) { try { s.res.write(text); } catch { this.subs.delete(s.id); } }
   }
 
-  /** Tell everyone who can browse the space that something in it changed. */
+  /** Tell everyone who can browse the space that something in it changed (on every instance). */
   async publishChange(tenantId: number, projectId: number, ev: ChangeEvent) {
+    await this.deliverChange(tenantId, projectId, ev);
+    for (const keys of chunk(ev.keys, KEYS_PER_MESSAGE)) await this.send({ k: 'change', tenantId, projectId, ev: { ...ev, keys } });
+  }
+  private async deliverChange(tenantId: number, projectId: number, ev: ChangeEvent) {
     for (const s of this.subs.values()) {
       if (s.user.tenantId !== tenantId) continue;
       await this.membership(s);
@@ -77,17 +137,29 @@ export class Hub {
     }
   }
 
-  /** Ping one person's open tabs that they have new notifications. */
-  pingUser(userId: number) {
+  /** Ping these people's open tabs (on every instance) that they have new notifications. */
+  pingUsers(userIds: number[]) {
+    userIds.forEach((u) => this.deliverPing(u));
+    for (const users of chunk(userIds, IDS_PER_MESSAGE)) if (users.length) void this.send({ k: 'ping', users });
+  }
+  pingUser(userId: number) { this.pingUsers([userId]); }
+  private deliverPing(userId: number) {
     for (const s of this.subs.values()) if (s.user.id === userId) this.write(s, 'notification', {});
   }
 
-  /** Membership changed (added to a space): refresh on next event. */
+  /** Membership changed (added to a space): refresh on next event, on every instance. */
   invalidate(userId?: number) {
+    this.deliverInvalidate(userId);
+    void this.send({ k: 'inv', userId });
+  }
+  private deliverInvalidate(userId?: number) {
     for (const s of this.subs.values()) if (!userId || s.user.id === userId) s.refreshed = 0;
   }
 
   close() {
+    this.closed = true;
+    hubs.delete(this);
+    void this.unlisten?.();
     clearInterval(this.timer);
     for (const s of this.subs.values()) { try { s.res.end(); } catch { /* gone */ } }
     this.subs.clear();
@@ -96,12 +168,14 @@ export class Hub {
 
 // ------------------------------------------------------------------ notification pings
 // notify() runs inside request transactions; ping shortly after so the recipient's refetch sees committed rows.
-let current: Hub | null = null;
-export const setHub = (h: Hub | null) => { current = h; };
+/** Kept for compatibility: hubs register themselves when created and unregister on close. */
+export const setHub = (_h: Hub | null) => {};
 export function pingLater(userIds: number[]) {
-  if (!current || !userIds.length) return;
-  const hub = current;
-  setTimeout(() => userIds.forEach((id) => hub.pingUser(id)), 150);
+  if (!userIds.length) return;
+  setTimeout(() => {
+    const hub = hubs.values().next().value as Hub | undefined;
+    hub?.pingUsers(userIds);
+  }, 150);
 }
 
 // ------------------------------------------------------------------ change tracking

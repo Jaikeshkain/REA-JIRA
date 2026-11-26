@@ -4,7 +4,7 @@ import { seedIfEmpty } from './seed.js';
 import { startScheduler } from './scheduler.js';
 
 // API_PORT (not PORT): dev launchers set PORT for the UI server, which would collide with Vite.
-const port = Number(process.env.API_PORT ?? 4000);
+const port = Number(process.env.API_PORT || 4000);
 const db = await openDb();
 await seedIfEmpty(db);
 const app = buildApp(db);

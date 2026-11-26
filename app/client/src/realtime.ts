@@ -13,6 +13,8 @@ export function startRealtime(handlers: {
   onChange: (e: ChangeEvent) => void;
   onNotification: () => void;
   onState: (s: LiveState) => void;
+  /** The server may have missed events (e.g. its database listener reconnected): refetch everything. */
+  onResync?: () => void;
 }) {
   let stopped = false;
   let ctl: AbortController | null = null;
@@ -46,6 +48,7 @@ export function startRealtime(handlers: {
             if (event === 'hello') { handlers.onState('live'); delay = 1000; }
             else if (event === 'change' && data) handlers.onChange(JSON.parse(data));
             else if (event === 'notification') handlers.onNotification();
+            else if (event === 'resync') handlers.onResync?.();
           }
         }
       } catch {

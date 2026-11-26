@@ -1078,6 +1078,42 @@ try {
     }
   });
 
+  await test('multi-instance: events cross app instances once; scheduler lock released', async () => {
+    const app3 = buildApp(db, { attachmentsDir: attachDir, oidc: null });
+    const srv3 = app3.listen(0);
+    const base3 = `http://127.0.0.1:${(srv3.address() as AddressInfo).port}/api`;
+    await (app3.locals.hub as { ready: Promise<void> }).ready;
+    await (app.locals.hub as { ready: Promise<void> }).ready;
+    const open = async (b: string, token: string) => {
+      const ctl = new AbortController();
+      const events: string[] = [];
+      const res = await fetch(`${b}/events`, { headers: { authorization: `Bearer ${token}` }, signal: ctl.signal });
+      const reader = res.body!.getReader();
+      const dec = new TextDecoder();
+      (async () => { try { for (;;) { const { value, done } = await reader.read(); if (done) break; for (const m of dec.decode(value).matchAll(/^event: (.*)$/gm)) events.push(m[1]); } } catch { /* closed */ } })();
+      const t0 = Date.now();
+      while (!events.includes('hello') && Date.now() - t0 < 2000) await new Promise((r) => setTimeout(r, 20));
+      return { events, close: () => ctl.abort(), n: (e: string) => events.filter((x) => x === e).length };
+    };
+    const onOther = await open(base3, viewer);
+    const onSame = await open(base, viewer);
+    try {
+      const w = await call(dev, 'PATCH', '/issue/DEMO-7/fields/summary', { value: `Wallet (multi-instance ${Date.now()})` });
+      assert.ok(w.status < 300, `edit failed: ${w.status} ${JSON.stringify(w.body)}`);
+      const t0 = Date.now();
+      while (onOther.n('change') < 1 && Date.now() - t0 < 2000) await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(onOther.n('change'), 1, `other instance: exactly once (via the bus) other=${onOther.events} same=${onSame.events}`);
+      assert.equal(onSame.n('change'), 1, 'same instance: exactly once (own echo ignored)');
+    } finally {
+      onOther.close(); onSame.close();
+      (app3.locals.hub as { close(): void }).close();
+      srv3.close();
+    }
+    await tick(db);
+    assert.equal((await db.query(`SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory'`))[0].n, 0, 'scheduler lock released');
+  });
+
   await test('recently viewed list', async () => {
     await call(admin, 'GET', '/issue/DEMO-2');
     const r = (await call(admin, 'GET', '/recent')).body;

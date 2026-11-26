@@ -8,3 +8,8 @@ app/server/data/
 
 # REA capture bundles: large (12 MB) and contain data from the live Jira site (account IDs, emails)
 evidence/
+
+# local settings and secrets (templates stay in git)
+.env
+.env.*
+!.env.example

@@ -46,6 +46,7 @@ export function Layout() {
         timer = setTimeout(bump, 350);
       },
       onNotification: () => window.dispatchEvent(new Event('tracker:notify')),
+      onResync: () => { bump(); window.dispatchEvent(new Event('tracker:notify')); },
       onState: setLive,
     });
     return () => { stop(); if (timer) clearTimeout(timer); };

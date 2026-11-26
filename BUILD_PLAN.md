@@ -95,6 +95,9 @@ in the space List view.
 OIDC (code + PKCE) with full ID-token checks, verified-email account linking, JIT accounts, domain allow-list,
 SSO-only mode with admin break-glass, mock provider for development and tests.
 
-## Phase 4 — remaining candidates
-Multi-instance real-time
-and scheduler (Postgres LISTEN/NOTIFY + advisory lock).
+## Phase 4 — part 7 done: multi-instance
+Live updates over Postgres LISTEN/NOTIFY (once per browser, own echo ignored, chunked payloads, listener
+reconnect + browser resync), scheduler passes under an advisory lock. Verified against a real Postgres 17.
+
+## Phase 4 — complete
+All planned Phase 4 items are built.
