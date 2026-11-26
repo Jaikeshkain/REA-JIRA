@@ -29,6 +29,7 @@ import { securityRoutes } from './security.js';
 import { voteRoutes } from './votes.js';
 import { accountRoutes, myAccountRoutes } from './accounts.js';
 import { adminRoutes } from './admin.js';
+import { publicSiteRoutes, siteSettingsRoutes } from './sitesettings.js';
 import { createSession, userJsonFromRow } from './auth.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -51,6 +52,7 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string; oidc?: OidcCon
     res.json({ ok: true });
   });
   app.use('/api/auth/oidc', oidcRoutes(db, opts.oidc === undefined ? oidcConfigFromEnv() : opts.oidc));
+  app.use('/api/auth', publicSiteRoutes(db));
   app.use('/api/auth', accountRoutes(db, createSession, userJsonFromRow));
   app.use('/api/auth', authRoutes(db));
   // real-time: one SSE stream per tab; change events published after successful writes
@@ -84,6 +86,7 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string; oidc?: OidcCon
     voteRoutes(db, loadIssue, logChange),
     myAccountRoutes(db),
     adminRoutes(db, () => hub.invalidate()),
+    siteSettingsRoutes(db),
   );
   app.use('/api', (_req, res) => {
     res.status(404).json({ errorMessages: ['Not found'] });

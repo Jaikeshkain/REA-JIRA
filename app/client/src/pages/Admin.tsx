@@ -17,6 +17,7 @@ export function AdminTabs() {
       <NavLink to="/admin/audit">Audit log</NavLink>
       <NavLink to="/admin/webhooks">Webhooks</NavLink>
       <NavLink to="/admin/outbox">Email outbox</NavLink>
+      <NavLink to="/admin/settings">Settings</NavLink>
     </nav>
   );
 }

@@ -124,7 +124,8 @@ All items from the requirements' Phase 2–3 roadmap are built.
 ## Must-haves done: accounts, administration, deployment
 Password reset, email verification, invitations, change password, rate limits, idle sessions; admin users
 (invite/deactivate/site admin) and groups granting space roles; Dockerfile, compose with PostgreSQL, CI, production
-serving with security headers.
+serving with security headers. Site settings: sign-up open / domains / invitation only; space creation everyone /
+site admins.
 
 ## Still open (from JIRA_REQUIREMENTS.md)
 Configurable permission/notification schemes, workflow post-functions, dev-tool integrations (GitHub/GitLab), Forms,

@@ -1689,6 +1689,35 @@ try {
     await call(admin, 'DELETE', `/admin/groups/${leads.id}`);
   });
 
+  await test('site settings: close sign-up, sign-up domains, space creation for site admins only', async () => {
+    assert.deepEqual((await call(null, 'GET', '/auth/site')).body, { setup: false, allowSignup: true, signupDomains: [] });
+    assert.equal((await call(dev, 'GET', '/admin/settings')).status, 403);
+    assert.equal((await call(dev, 'PUT', '/admin/settings', { allowSignup: false })).status, 403);
+    // domain-limited sign-up
+    assert.equal((await call(admin, 'PUT', '/admin/settings', { signupDomains: ['not a domain'] })).status, 400);
+    await call(admin, 'PUT', '/admin/settings', { signupDomains: ['Example.com'] });
+    assert.deepEqual((await call(null, 'GET', '/auth/site')).body.signupDomains, ['example.com']);
+    assert.equal((await call(null, 'POST', '/auth/register', { email: 'stranger@elsewhere.test', displayName: 'S', password: 'longenough1' })).status, 403);
+    assert.equal((await call(null, 'POST', '/auth/register', { email: 'colleague@example.com', displayName: 'C', password: 'longenough1' })).status, 201);
+    // closed: nobody signs up; invitations still work
+    await call(admin, 'PUT', '/admin/settings', { allowSignup: false, signupDomains: [] });
+    const closed = await call(null, 'POST', '/auth/register', { email: 'late2@example.com', displayName: 'L', password: 'longenough1' });
+    assert.equal(closed.status, 403);
+    assert.match(closed.body.errorMessages[0], /closed/);
+    assert.equal((await call(null, 'GET', '/auth/site')).body.allowSignup, false);
+    assert.equal((await call(admin, 'POST', '/admin/users/invite', { email: 'invited2@example.com', displayName: 'I' })).status, 201, 'invites still work');
+    // space creation
+    assert.equal((await call(dev, 'GET', '/myself')).body.canCreateSpaces, true);
+    await call(admin, 'PUT', '/admin/settings', { spaceCreation: 'admins' });
+    assert.equal((await call(dev, 'GET', '/myself')).body.canCreateSpaces, false);
+    assert.equal((await call(dev, 'POST', '/project', { key: 'NOPE', name: 'Nope' })).status, 403);
+    assert.equal((await call(admin, 'GET', '/myself')).body.canCreateSpaces, true);
+    assert.equal((await call(admin, 'POST', '/project', { key: 'OPSX', name: 'Ops X' })).status, 201, 'site admins still can');
+    const acts = (await call(admin, 'GET', '/admin/audit?category=admin')).body.values.map((x: any) => x.target);
+    assert.ok(acts.some((t: string) => t?.includes('closed sign-up')) && acts.some((t: string) => t?.includes('site admins only')));
+    await call(admin, 'PUT', '/admin/settings', { allowSignup: true, spaceCreation: 'everyone' });
+  });
+
   await test('recently viewed list', async () => {
     await call(admin, 'GET', '/issue/DEMO-2');
     const r = (await call(admin, 'GET', '/recent')).body;

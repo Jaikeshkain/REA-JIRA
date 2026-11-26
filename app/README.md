@@ -32,7 +32,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (48 checks)
+npm test           # API smoke test on an in-memory database (49 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -132,6 +132,9 @@ npm run build      # type-check server + client, production-build client
 - **Users** (Administration → Users): search everyone, **invite** by email (they set their own password from a 7-day
   link), resend invites, **deactivate** (signed out everywhere, API tokens stop, work and history kept) and reactivate,
   grant or remove site admin. You can't deactivate yourself or remove the last site admin.
+- **Site settings** (Administration → Settings): **who can sign up** — anyone, only people with chosen email domains, or
+  nobody (invitation only; invites and SSO still work) — and **who can create spaces** — everyone, or site admins only.
+  The login page hides “Create an account” when sign-up is closed. Changes are in the audit log.
 - **Groups** (Administration → Groups, and Space settings → Access → Groups): give a group a role in a space and all its
   members get that access; people added later get it too, removed people lose it. Personal access is never
   overridden, and the highest role wins when several groups apply. All of this is in the audit log.
@@ -148,6 +151,9 @@ docker compose -f app/docker-compose.yml up -d --build
 - Put it behind HTTPS (a reverse proxy or load balancer) and set `APP_URL` to the public address and `TRUST_PROXY=1`
   so rate limits and the audit log see real client IPs. Several app containers can share one database.
 - Without Docker: `npm ci`, `npm run build -w client`, then `SERVE_CLIENT=1 HOST=0.0.0.0 DATABASE_URL=… npm start`.
+- **Right after the first start:** sign up (the first account becomes the site admin), then go to Administration →
+  Settings and set sign-up to *invitation only* (or your company's email domain) and, if you like, space creation to
+  *site admins only*.
 - **Migrations** run automatically at start-up. The demo site is only created on an empty database unless
   `SKIP_SEED=1` (compose sets it): the first person to sign up becomes the site admin.
 - **Backups:** `docker compose exec db pg_dump -U tracker -Fc tracker > tracker.dump` (restore with `pg_restore`), plus

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { assertCanCreateSpace, siteSettings } from './sitesettings.js';
 import { visibleSql } from './security.js';
 import { z } from 'zod';
 import type { Db } from './db.js';
@@ -80,6 +81,7 @@ export function projectRoutes(db: Db) {
     '/project',
     h(async (req, res) => {
       const user = req.user!;
+      await assertCanCreateSpace(db, user);
       const body = CreateProject.parse(req.body);
       const exists = await db.query(`SELECT 1 FROM projects WHERE tenant_id = $1 AND upper(key) = upper($2)`, [user.tenantId, body.key]);
       if (exists.length) throw bad(`Project key ${body.key.toUpperCase()} is already used`, { key: 'taken' });
@@ -280,7 +282,8 @@ export function projectRoutes(db: Db) {
     '/myself',
     h(async (req) => {
       const u = req.user!;
-      return { accountId: String(u.id), displayName: u.displayName, emailAddress: u.email, avatarColor: u.avatarColor, isSiteAdmin: u.isSiteAdmin, emailVerified: u.emailVerified ?? true };
+      const canCreateSpaces = u.isSiteAdmin || (await siteSettings(db, u.tenantId)).spaceCreation === 'everyone';
+      return { accountId: String(u.id), displayName: u.displayName, emailAddress: u.email, avatarColor: u.avatarColor, isSiteAdmin: u.isSiteAdmin, emailVerified: u.emailVerified ?? true, canCreateSpaces };
     }),
   );
 

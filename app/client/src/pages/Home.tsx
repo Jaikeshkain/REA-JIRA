@@ -62,6 +62,7 @@ export function ForYou() {
 
 export function Projects() {
   const nav = useNavigate();
+  const { user } = useAuth();
   const { bump, version } = useShell();
   const list = useAsync(() => api.projects(), [version]);
   const [showNew, setShowNew] = useState(false);
@@ -83,7 +84,7 @@ export function Projects() {
 
   return (
     <div className="page">
-      <PageHeader title="Spaces" actions={<button className="btn primary" onClick={() => setShowNew(true)}>Create space</button>} />
+      <PageHeader title="Spaces" actions={user?.canCreateSpaces !== false ? <button className="btn primary" onClick={() => setShowNew(true)}>Create space</button> : <span className="muted small">Ask a site admin to create a new space</span>} />
       {showNew && (
         <form className="panel inline-form" onSubmit={submit}>
           <label>Name<input value={form.name} autoFocus required onChange={(e) => setForm({ name: e.target.value, key: form.key || suggestKey(e.target.value) })} /></label>

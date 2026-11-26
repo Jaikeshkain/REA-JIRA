@@ -590,3 +590,12 @@ CREATE TABLE IF NOT EXISTS project_groups (
   PRIMARY KEY (project_id, group_id)
 );
 ALTER TABLE project_members ADD COLUMN IF NOT EXISTS via_group_id INT REFERENCES groups(id) ON DELETE CASCADE;
+
+-- ---------------------------------------------------------------- site settings (sign-up, space creation)
+CREATE TABLE IF NOT EXISTS site_settings (
+  tenant_id       INT PRIMARY KEY REFERENCES tenants(id),
+  allow_signup    BOOLEAN NOT NULL DEFAULT true,
+  signup_domains  TEXT[] NOT NULL DEFAULT '{}',
+  space_creation  TEXT NOT NULL DEFAULT 'everyone' CHECK (space_creation IN ('everyone','admins')),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);

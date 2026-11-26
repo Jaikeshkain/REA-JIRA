@@ -15,6 +15,8 @@ export function Login() {
   const [busy, setBusy] = useState(false);
   const [sso, setSso] = useState<SsoConfig | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [site, setSite] = useState<{ allowSignup: boolean; signupDomains: string[] } | null>(null);
+  useEffect(() => { api.siteInfo().then(setSite, () => setSite(null)); }, []);
   useEffect(() => { api.ssoConfig().then(setSso, () => setSso({ enabled: false, name: null, passwordLogin: 'all' })); }, []);
   useEffect(() => { if (ssoError) setError(ssoError); }, [ssoError]);
 
@@ -79,7 +81,8 @@ export function Login() {
         {mode !== 'forgot' && ssoOnly && !showPassword && (
           <button type="button" className="link-btn" onClick={() => setShowPassword(true)}>Site admin? Log in with a password</button>
         )}
-        {mode !== 'forgot' && !ssoOnly && (
+        {mode === 'up' && site?.signupDomains.length ? <p className="muted small">Sign-up is open to {site.signupDomains.map((d) => `@${d}`).join(', ')} email addresses.</p> : null}
+        {mode !== 'forgot' && !ssoOnly && (mode === 'up' || site?.allowSignup !== false) && (
           <button type="button" className="link-btn" onClick={() => { setMode(mode === 'in' ? 'up' : 'in'); setError(null); }}>
             {mode === 'in' ? 'Create an account' : 'Already have an account? Log in'}
           </button>
