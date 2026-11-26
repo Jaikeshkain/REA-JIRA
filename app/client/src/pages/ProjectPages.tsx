@@ -45,7 +45,7 @@ export function Board() {
   const nav = useNavigate();
   const [filter, setFilter] = useState<string[]>([]);
   const [q, setQ] = useState('');
-  const [columns, setColumns] = useState<{ status: Status; issues: Issue[] }[] | null>(null);
+  const [columns, setColumns] = useState<{ status: Status; issues: Issue[]; wipLimit?: number | null }[] | null>(null);
   const [sprint, setSprint] = useState<{ enabled: boolean; current: Sprint | null }>({ enabled: false, current: null });
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [dropAt, setDropAt] = useState<{ col: string; index: number } | null>(null);
@@ -139,8 +139,10 @@ export function Board() {
             }}
             onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropAt(null); }}
             onDrop={(e) => { e.preventDefault(); if (dropAt) onDrop(col.status.id, dropAt.index); setDropAt(null); setDragKey(null); }}>
-            <header className="column-head">
-              <span>{col.status.name}</span><span className="count">{col.issues.length}</span>
+            <header className={`column-head ${col.wipLimit && col.issues.length > col.wipLimit ? 'over' : ''}`}>
+              <span>{col.status.name}</span>
+              <span className="count" title={col.wipLimit ? `Work-in-progress limit: ${col.wipLimit}` : undefined}>{col.issues.length}{col.wipLimit ? ` / ${col.wipLimit}` : ''}</span>
+              {col.wipLimit && col.issues.length > col.wipLimit ? <span className="wip-over">Over limit</span> : null}
               {col.status.statusCategory.key === 'done' && <span title="Done column">✓</span>}
             </header>
             <div className="cards">

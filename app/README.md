@@ -32,7 +32,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (38 checks)
+npm test           # API smoke test on an in-memory database (40 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -118,6 +118,22 @@ npm run build      # type-check server + client, production-build client
 - API: `GET|POST /api/project/:key/fields`, `PUT|DELETE /api/field/:id`; `GET /api/project/:key/workflow`,
   `POST /api/project/:key/statuses`, `PUT|DELETE /api/status/:id[?moveTo=]`, `POST /api/project/:key/transitions`,
   `PUT|DELETE /api/transition/:id`; `customfield_<id>` keys on create and `PATCH /api/issue/:key/fields/customfield_<id>`.
+
+## Phase 5 (part 3): time tracking and WIP limits
+
+- **Estimates:** each work item has an *original estimate* and a *remaining estimate*, written like `1w 2d 3h 30m`
+  (1d = 8h, 1w = 5d, as in Jira). Setting an original estimate with no remaining estimate sets both.
+- **Log work** (work item page → Time tracking → Log work): time spent, when, and a note. The remaining estimate is
+  reduced by the time spent (never below 0), left alone, or set to a new value. A bar shows logged vs remaining, and
+  going over the original estimate is called out in text. **Work log** tab in Activity lists every entry; you can edit or
+  delete your own (space admins: anyone's), and deleting gives the time back to the remaining estimate.
+- Every estimate and time-spent change is in History. Members can log work; viewers can't.
+- **JQL:** `timeSpent > 1d`, `originalEstimate = 3d`, `remainingEstimate is EMPTY`, `worklogAuthor = currentUser()`,
+  `worklogDate >= -7d`, and `ORDER BY timeSpent`. Original / remaining / time spent are Search and CSV columns.
+- **API (Jira-shaped):** `GET|POST /issue/{key}/worklog`, `PUT|DELETE /issue/{key}/worklog/{id}` with
+  `adjustEstimate=auto|leave|new|manual`; `fields.timetracking` on create and edit.
+- **WIP limits:** space admins set a work-in-progress limit per status (Space settings → Workflow). The board column
+  shows `count / limit` and turns red with "Over limit" when exceeded (moving work in isn't blocked, as in Jira).
 
 ## Phase 5 (part 2): releases and components
 

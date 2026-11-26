@@ -164,6 +164,7 @@ export function projectRoutes(db: Db) {
         sprint: sprintJson(sprint),
         columns: statuses.map((s) => ({
           status: { id: String(s.id), name: s.name, statusCategory: { key: s.category } },
+          wipLimit: s.wip_limit ?? null,
           issues: rows.filter((i) => i.status_id === s.id).map(issueJson),
         })),
       };

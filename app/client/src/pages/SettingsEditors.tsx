@@ -153,7 +153,7 @@ export function WorkflowEditor({ project }: { project: Project }) {
         <h2>Statuses</h2>
         <p className="muted small">Each status is a board column, left to right. The first status is where new work starts. The category decides colour and whether work counts as done (resolved).</p>
         <table className="table">
-          <thead><tr><th>Order</th><th>Status</th><th>Category</th><th>Work items</th><th aria-label="Actions" /></tr></thead>
+          <thead><tr><th>Order</th><th>Status</th><th>Category</th><th>Work items</th><th title="Most work items allowed in this board column">WIP limit</th><th aria-label="Actions" /></tr></thead>
           <tbody>{wf.statuses.map((s, i) => (
             <tr key={s.id}>
               <td className="nowrap">
@@ -169,6 +169,8 @@ export function WorkflowEditor({ project }: { project: Project }) {
                 </select>
               </td>
               <td>{s.issueCount}</td>
+              <td><input type="number" min={1} max={999} className="inline-small" aria-label={`WIP limit for ${s.name}`} placeholder="None" defaultValue={s.wipLimit ?? ''} key={`w${s.wipLimit}`}
+                onBlur={(e) => { const v = e.target.value ? Number(e.target.value) : null; if (v !== (s.wipLimit ?? null)) apply(api.updateStatus(s.id, { wipLimit: v })); }} /></td>
               <td><button className="link-btn danger-text" disabled={wf.statuses.length <= 1}
                 onClick={() => (s.issueCount ? setRemoving(s) : confirm(`Delete status "${s.name}"?`) && apply(api.deleteStatus(s.id)))}>Delete</button></td>
             </tr>

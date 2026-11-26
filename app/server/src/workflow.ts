@@ -159,7 +159,7 @@ export function workflowRoutes(db: Db) {
     const transitions = await db.query(`SELECT * FROM transitions WHERE project_id = $1 ORDER BY to_status_id, from_status_id NULLS FIRST, id`, [projectId]);
     const fields = await db.query(`SELECT id, name FROM custom_fields WHERE project_id = $1 ORDER BY position, id`, [projectId]);
     return {
-      statuses: statuses.map((s) => ({ id: String(s.id), name: s.name, statusCategory: { key: s.category }, position: s.position, issueCount: s.issue_count })),
+      statuses: statuses.map((s) => ({ id: String(s.id), name: s.name, statusCategory: { key: s.category }, position: s.position, issueCount: s.issue_count, wipLimit: s.wip_limit ?? null })),
       transitions: transitions.map((t) => ({
         id: String(t.id), name: t.name, from: t.from_status_id == null ? null : String(t.from_status_id), to: String(t.to_status_id),
         requiredFields: t.required_fields, allowedRoles: t.allowed_roles,
@@ -201,13 +201,14 @@ export function workflowRoutes(db: Db) {
       name: z.string().trim().min(1).max(40).optional(),
       category: z.enum(['todo', 'in_progress', 'done']).optional(),
       position: z.number().int().min(0).optional(),
+      wipLimit: z.number().int().min(1).max(999).nullable().optional(),
     }).parse(req.body ?? {});
     if (body.name && body.name.toLowerCase() !== s.name.toLowerCase()) {
       const dup = await db.query(`SELECT 1 FROM statuses WHERE project_id = $1 AND lower(name) = lower($2)`, [s.project_id, body.name]);
       if (dup.length) throw bad(`Status "${body.name}" already exists`);
     }
     await db.tx(async (q) => {
-      await q.query(`UPDATE statuses SET name = $1, category = $2 WHERE id = $3`, [body.name ?? s.name, body.category ?? s.category, s.id]);
+      await q.query(`UPDATE statuses SET name = $1, category = $2, wip_limit = $4 WHERE id = $3`, [body.name ?? s.name, body.category ?? s.category, s.id, body.wipLimit !== undefined ? body.wipLimit : s.wip_limit]);
       if (body.name) await q.query(`UPDATE transitions SET name = $1 WHERE to_status_id = $2 AND from_status_id IS NULL AND name = $3`, [body.name, s.id, s.name]);
       // moving into/out of the Done category resolves/unresolves the work already in it
       if (body.category && body.category !== s.category) {

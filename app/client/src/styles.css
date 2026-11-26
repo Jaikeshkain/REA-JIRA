@@ -557,3 +557,21 @@ code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
 .facts b { color: var(--text-subtle); font-weight: 600; margin-right: 4px; }
 .crumbs a { color: var(--text-subtle); }
 .strong { font-weight: 600; }
+
+/* ---------- time tracking + WIP limits (Phase 5) ---------- */
+.time-panel { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.time-bar { display: flex; gap: 2px; height: 8px; }
+.time-bar > span { border-radius: 4px; min-width: 4px; }
+.time-logged { background: var(--brand); }
+.time-left { background: var(--prog-bg); }
+.time-free { background: var(--bg-sunken); }
+.time-text { display: flex; justify-content: space-between; gap: 8px; color: var(--text-subtle); }
+.time-text b { color: var(--text); }
+.time-row { display: flex; gap: 8px; }
+.time-row label { flex: 1; min-width: 0; }
+.time-row input { width: 100%; }
+.inline-small { width: 90px; margin-left: 6px; }
+.column-head.over { background: #ffeceb; border-radius: 6px; }
+.column-head.over .count { color: var(--danger); font-weight: 700; }
+.wip-over { font-size: 11px; font-weight: 700; color: var(--danger); text-transform: uppercase; }
+@media (prefers-color-scheme: dark) { .column-head.over { background: #3a1a17; } }

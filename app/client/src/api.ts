@@ -30,6 +30,8 @@ export interface Issue {
     sprint: { id: string; name: string; state: SprintState } | null;
     fixVersions?: { id: string; name: string; released: boolean; archived?: boolean }[];
     components?: { id: string; name: string }[];
+    timetracking?: { originalEstimate?: string; originalEstimateSeconds?: number; remainingEstimate?: string; remainingEstimateSeconds?: number; timeSpent?: string; timeSpentSeconds?: number };
+    timespent?: number | null;
     issuelinks?: IssueLink[];
     attachment?: Attachment[];
   };
@@ -46,7 +48,7 @@ export interface CustomField {
   options: { id: string; value: string }[]; required: boolean; issueTypeIds: string[] | null; position: number;
 }
 export interface Workflow {
-  statuses: (Status & { position: number; issueCount: number })[];
+  statuses: (Status & { position: number; issueCount: number; wipLimit?: number | null })[];
   transitions: { id: string; name: string; from: string | null; to: string; requiredFields: string[]; allowedRoles: string[] | null }[];
   requirableFields: { id: string; name: string }[];
 }
@@ -63,6 +65,7 @@ export interface Version {
   released: boolean; archived: boolean; overdue: boolean; issues?: { total: number; todo: number; inProgress: number; done: number } | null;
 }
 export interface Component { id: string; name: string; description: string; projectId: string; lead: { accountId: string; displayName: string } | null; issueCount: number }
+export interface Worklog { id: string; issueId: string; author: User | null; comment: string; started: string; created: string; updated: string; timeSpent: string; timeSpentSeconds: number }
 export interface Dependency { id: string; blocker: string; blocked: string }
 export interface LinkType { id: string; name: string; inward: string; outward: string }
 export interface LinkedIssue {
@@ -254,7 +257,7 @@ export const api = {
   deleteField: (fieldId: string) => call('DELETE', `/field/${fieldId}`),
   workflow: (key: string) => call<Workflow>('GET', `/project/${key}/workflow`),
   addStatus: (key: string, name: string, category: string) => call<Workflow>('POST', `/project/${key}/statuses`, { name, category }),
-  updateStatus: (id: string, body: { name?: string; category?: string; position?: number }) => call<Workflow>('PUT', `/status/${id}`, body),
+  updateStatus: (id: string, body: { name?: string; category?: string; position?: number; wipLimit?: number | null }) => call<Workflow>('PUT', `/status/${id}`, body),
   deleteStatus: (id: string, moveTo?: string) => call<Workflow>('DELETE', `/status/${id}${moveTo ? `?moveTo=${moveTo}` : ''}`),
   addTransition: (key: string, body: { name?: string; from: string | null; to: string; requiredFields?: string[]; allowedRoles?: string[] | null }) =>
     call<Workflow>('POST', `/project/${key}/transitions`, body),
@@ -331,6 +334,10 @@ export const api = {
   createComponent: (project: string, body: { name: string; description?: string; leadAccountId?: string | null }) => call<Component>('POST', '/component', { project, ...body }),
   updateComponent: (id: string, body: Partial<{ name: string; description: string; leadAccountId: string | null }>) => call<Component>('PUT', `/component/${id}`, body),
   deleteComponent: (id: string, moveTo: string | null) => call('DELETE', `/component/${id}${moveTo ? `?moveIssuesTo=${moveTo}` : ''}`),
+  worklogs: (key: string) => call<{ total: number; worklogs: Worklog[] }>('GET', `/issue/${key}/worklog`),
+  addWorklog: (key: string, body: { timeSpent: string; started?: string; comment?: string; adjustEstimate?: string; newEstimate?: string }) => call<Worklog>('POST', `/issue/${key}/worklog`, body),
+  updateWorklog: (key: string, id: string, body: { timeSpent?: string; started?: string; comment?: string; adjustEstimate?: string; newEstimate?: string }) => call<Worklog>('PUT', `/issue/${key}/worklog/${id}`, body),
+  deleteWorklog: (key: string, id: string) => call('DELETE', `/issue/${key}/worklog/${id}`),
   dependencies: (key: string) => call<{ dependencies: Dependency[] }>('GET', `/project/${key}/dependencies`),
   deleteAttachment: (id: string) => call('DELETE', `/attachment/${id}`),
   /** Raw-body upload; the server stores bytes as-is (max size enforced server-side). */

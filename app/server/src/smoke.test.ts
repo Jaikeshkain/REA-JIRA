@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { cleanFilename } from './attachments.js';
 import { tick } from './scheduler.js';
 import { startMockIdp } from './dev-idp.js';
+import { parseDuration, formatDuration } from './timetracking.js';
 import type { OidcConfig } from './oidc.js';
 
 let passed = 0;
@@ -1360,6 +1361,99 @@ try {
     assert.deepEqual(table.issues[0].fields.components.map((c: any) => c.name), ['API']);
     const acts = (await call(admin, 'GET', '/admin/audit?category=releases')).body.values.map((a: any) => a.action);
     assert.ok(acts.includes('Released a version') && acts.some((a: string) => a.startsWith('Changed components')));
+  });
+
+  await test('time tracking: durations, estimates, work log with estimate adjustment, history, permissions', async () => {
+    assert.equal(parseDuration('1w 2d 3h 30m'), (5 * 8 + 2 * 8 + 3) * 3600 + 30 * 60);
+    assert.equal(parseDuration('1.5h'), 5400);
+    assert.equal(parseDuration('90'), 5400, 'plain numbers are minutes');
+    assert.equal(parseDuration('2h30m'), 9000);
+    assert.throws(() => parseDuration('2 hours'), /valid time/);
+    assert.throws(() => parseDuration('0m'), /more than zero/);
+    assert.equal(formatDuration(9000), '2h 30m');
+    assert.equal(formatDuration(8 * 3600 * 6), '1w 1d');
+
+    const k = (await call(dev, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'Timed', timetracking: { originalEstimate: '2d' } } })).body.key;
+    let i = (await call(dev, 'GET', `/issue/${k}`)).body;
+    assert.deepEqual(i.fields.timetracking, { originalEstimate: '2d', originalEstimateSeconds: 57600, remainingEstimate: '2d', remainingEstimateSeconds: 57600 });
+
+    // log 3h → remaining auto-reduces to 1d 5h
+    const log = async (t: string | null, body: object, q = '') => call(t, 'POST', `/issue/${k}/worklog${q}`, body);
+    const w1 = await log(dev, { timeSpent: '3h', comment: 'spike', started: '2026-11-20T09:00:00.000+00:00' });
+    assert.equal(w1.status, 201);
+    assert.equal(w1.body.timeSpent, '3h');
+    i = (await call(dev, 'GET', `/issue/${k}?expand=changelog`)).body;
+    assert.equal(i.fields.timetracking.timeSpent, '3h');
+    assert.equal(i.fields.timetracking.remainingEstimate, '1d 5h');
+    const fields = i.changelog.slice(0, 2).map((c: any) => `${c.items[0].field}:${c.items[0].fromString ?? ''}->${c.items[0].toString}`);
+    assert.deepEqual(fields.sort(), ['timeestimate:2d->1d 5h', 'timespent:->3h']);
+
+    // leave / new / manual
+    await log(dev, { timeSpent: '1h', adjustEstimate: 'leave' });
+    assert.equal((await call(dev, 'GET', `/issue/${k}`)).body.fields.timetracking.remainingEstimate, '1d 5h');
+    await log(dev, { timeSpent: '1h', adjustEstimate: 'new', newEstimate: '4h' });
+    assert.equal((await call(dev, 'GET', `/issue/${k}`)).body.fields.timetracking.remainingEstimate, '4h');
+    await log(dev, { timeSpent: '1h' }, '?adjustEstimate=manual&reduceBy=30m');
+    assert.equal((await call(dev, 'GET', `/issue/${k}`)).body.fields.timetracking.remainingEstimate, '3h 30m');
+    await log(dev, { timeSpent: '1d' }); // more than remaining → 0, never negative
+    i = (await call(dev, 'GET', `/issue/${k}`)).body;
+    assert.equal(i.fields.timetracking.remainingEstimate, '0m');
+    assert.equal(i.fields.timetracking.timeSpent, '1d 6h');
+    assert.equal(i.fields.timespent, (8 + 6) * 3600);
+    assert.equal((await log(dev, { timeSpent: 'lots' })).status, 400);
+    assert.equal((await log(dev, { timeSpent: '1h', adjustEstimate: 'new' })).status, 400, 'new needs a value');
+
+    // list, edit own, delete adds time back (auto); viewers can't log; members can't touch others' logs
+    const list = (await call(viewer, 'GET', `/issue/${k}/worklog`)).body;
+    assert.equal(list.total, 5);
+    assert.equal(list.worklogs[0].comment, 'spike');
+    assert.equal(list.worklogs[0].author.displayName, 'Dana Dev');
+    assert.equal((await log(viewer, { timeSpent: '1h' })).status, 403);
+    const adminLog = (await log(admin, { timeSpent: '2h', adjustEstimate: 'leave' })).body;
+    assert.equal((await call(dev, 'PUT', `/issue/${k}/worklog/${adminLog.id}`, { timeSpent: '1h' })).status, 403, 'not your log');
+    assert.equal((await call(dev, 'DELETE', `/issue/${k}/worklog/${adminLog.id}`)).status, 403);
+    assert.equal((await call(admin, 'DELETE', `/issue/${k}/worklog/${adminLog.id}?adjustEstimate=leave`)).status, 204, 'admins can delete any log');
+    const edited = await call(dev, 'PUT', `/issue/${k}/worklog/${w1.body.id}`, { timeSpent: '4h', adjustEstimate: 'leave' });
+    assert.equal(edited.body.timeSpent, '4h');
+    assert.equal((await call(dev, 'DELETE', `/issue/${k}/worklog/${w1.body.id}`)).status, 204);
+    i = (await call(dev, 'GET', `/issue/${k}`)).body;
+    assert.equal(i.fields.timetracking.remainingEstimate, '4h', 'auto: deleting gives the time back');
+    assert.equal(i.fields.timetracking.timeSpent, '1d 3h');
+
+    // estimates by per-field edit; clearing; viewers can't
+    assert.ok((await call(dev, 'PATCH', `/issue/${k}/fields/timeoriginalestimate`, { value: '3d' })).status < 300);
+    assert.ok((await call(dev, 'PATCH', `/issue/${k}/fields/timeestimate`, { value: '1d' })).status < 300);
+    assert.equal((await call(viewer, 'PATCH', `/issue/${k}/fields/timeestimate`, { value: '1d' })).status, 403);
+    i = (await call(dev, 'GET', `/issue/${k}`)).body;
+    assert.equal(i.fields.timetracking.originalEstimate, '3d');
+    assert.equal(i.fields.timetracking.remainingEstimate, '1d');
+    assert.ok((await call(dev, 'PATCH', `/issue/${k}/fields/timetracking`, { value: { remainingEstimate: null } })).status < 300);
+    assert.equal((await call(dev, 'GET', `/issue/${k}`)).body.fields.timetracking.remainingEstimate, undefined);
+
+    // JQL + columns
+    const jql = async (q: string) => (await call(dev, 'POST', '/search/jql', { jql: q, maxResults: 100 })).body;
+    assert.ok((await jql(`key = ${k} AND timeSpent > 1d AND originalEstimate = 3d AND remainingEstimate is EMPTY`)).total === 1);
+    assert.equal((await jql(`key = ${k} AND timeSpent < 2h`)).total, 0);
+    assert.ok((await jql('worklogAuthor = currentUser()')).issues.some((x: any) => x.key === k));
+    assert.ok((await jql('worklogDate >= -1d')).issues.some((x: any) => x.key === k));
+    assert.equal((await jql(`key = ${k} AND worklogDate = "2026-11-20"`)).total, 0, 'that log was deleted');
+    assert.equal((await call(dev, 'POST', '/search/jql', { jql: 'timeSpent > lots' })).status, 400);
+    const cols = (await call(dev, 'GET', '/search/columns')).body.columns.map((c: any) => c.id);
+    assert.ok(['timeoriginalestimate', 'timeestimate', 'timespent'].every((c) => cols.includes(c)));
+  });
+
+  await test('WIP limits: set per status by space admins, returned on the board', async () => {
+    const wf = (await call(admin, 'GET', '/project/DEMO/workflow')).body;
+    const prog = wf.statuses.find((s: any) => s.statusCategory.key === 'in_progress');
+    assert.equal(prog.wipLimit, null);
+    assert.equal((await call(dev, 'PUT', `/status/${prog.id}`, { wipLimit: 1 })).status, 403);
+    assert.equal((await call(admin, 'PUT', `/status/${prog.id}`, { wipLimit: 0 })).status, 400);
+    const after = (await call(admin, 'PUT', `/status/${prog.id}`, { wipLimit: 1 })).body;
+    assert.equal(after.statuses.find((s: any) => s.id === prog.id).wipLimit, 1);
+    const board = (await call(dev, 'GET', '/project/DEMO/board')).body;
+    assert.equal(board.columns.find((c: any) => c.status.id === prog.id).wipLimit, 1);
+    await call(admin, 'PUT', `/status/${prog.id}`, { wipLimit: null });
+    assert.equal((await call(dev, 'GET', '/project/DEMO/board')).body.columns.find((c: any) => c.status.id === prog.id).wipLimit, null);
   });
 
   await test('recently viewed list', async () => {

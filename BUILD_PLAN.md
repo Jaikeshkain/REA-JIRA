@@ -110,6 +110,10 @@ admin audit log for configuration, security and sign-in events.
 Versions (release with move, archive, delete with move, progress), components with leads, Fix versions /
 Components on work items with History, JQL `fixVersion` / `component` incl. released/unreleasedVersions().
 
+## Phase 5 — part 3 done: time tracking + WIP limits
+Estimates, work log with estimate adjustment (auto/leave/new/manual), History, JQL time fields + worklogAuthor /
+worklogDate, per-status WIP limits on the board.
+
 ## Phase 5 — candidates
-Time tracking (worklogs), votes, WIP limits on board columns, JQL history
+Votes, JQL history
 operators (`was`, `changed`), archiving work items, issue-level security.

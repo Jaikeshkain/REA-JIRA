@@ -4,6 +4,7 @@
  * ORDER BY f [ASC|DESC], ...; functions currentUser(), now(), startOfDay(), endOfDay(), startOfWeek(),
  * startOfMonth(); relative dates like "-7d", "2w"; membersOf() is not yet supported.
  */
+import { parseDuration } from './timetracking.js';
 import { bad } from './http.js';
 
 type Tok =
@@ -162,6 +163,9 @@ const ORDER_COLUMNS: Record<string, string> = {
   duedate: 'i.due_date', summary: 'i.summary', priority: '(-pr.position)', status: 's.position',
   assignee: 'a.display_name', reporter: 'r.display_name', rank: 'i.rank', type: 't.name', issuetype: 't.name',
   resolution: 'i.resolution', project: 'p.key', sprint: 'sp.start_date', storypoints: 'i.story_points',
+  originalestimate: 'i.original_estimate_s', timeoriginalestimate: 'i.original_estimate_s',
+  remainingestimate: 'i.remaining_estimate_s', timeestimate: 'i.remaining_estimate_s',
+  timespent: '(SELECT sum(wl.time_spent_s) FROM worklogs wl WHERE wl.issue_id = i.id)',
 };
 
 const CATEGORY: Record<string, string> = {
@@ -309,6 +313,25 @@ export function compile(q: Query, ctx: Ctx, params: unknown[]): { where: string;
       }
       case 'parent':
         return many('i.parent_id', (v) => `(SELECT id FROM issues WHERE tenant_id = ${P(ctx.tenantId)} AND upper(key) = upper(${P(lit(v))}))`);
+      case 'originalestimate': case 'timeoriginalestimate': case 'remainingestimate': case 'timeestimate': case 'timespent': {
+        const col = field === 'timespent' ? `(SELECT sum(wl.time_spent_s) FROM worklogs wl WHERE wl.issue_id = i.id)`
+          : field.includes('original') ? 'i.original_estimate_s' : 'i.remaining_estimate_s';
+        if (isEmpty) return `${col} IS ${op === 'is not' ? 'NOT ' : ''}NULL`;
+        const dur = (v: Value) => P(parseDuration(lit(v), { allowZero: true }));
+        if (['>', '>=', '<', '<='].includes(op)) return `${col} ${op} ${dur(values[0])}`;
+        return many(col, dur);
+      }
+      case 'worklogauthor': {
+        if (!['=', '!=', 'in', 'not in'].includes(op)) throw bad(`JQL: operator ${op} not supported for worklogAuthor`);
+        const has = `EXISTS (SELECT 1 FROM worklogs wl WHERE wl.issue_id = i.id AND wl.author_id IN (${values.map(userExpr).join(', ')}))`;
+        return neg ? `NOT ${has}` : has;
+      }
+      case 'worklogdate': {
+        if (!['=', '>', '>=', '<', '<='].includes(op)) throw bad(`JQL: operator ${op} not supported for worklogDate`);
+        const d = dateExpr(values[0]);
+        const cond = op === '=' ? `wl.started_at >= date_trunc('day', ${d}) AND wl.started_at < date_trunc('day', ${d}) + interval '1 day'` : `wl.started_at ${op} ${d}`;
+        return `EXISTS (SELECT 1 FROM worklogs wl WHERE wl.issue_id = i.id AND ${cond})`;
+      }
       case 'fixversion': case 'fixversions': case 'component': case 'components': {
         const isV = field.startsWith('fix');
         const [link, col, ent] = isV ? ['issue_versions', 'version_id', 'versions'] : ['issue_components', 'component_id', 'components'];

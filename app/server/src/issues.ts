@@ -17,6 +17,7 @@ import { appliesTo, cfKey, fieldJson, fieldsOf, jqlCtx, normalise, setValue, val
 import { linksFor } from './links.js';
 import { attachmentsFor, type FileStore } from './attachments.js';
 import { setRelation, REL } from './versions.js';
+import { parseDuration, setEstimate, timeFields } from './timetracking.js';
 
 // ------------------------------------------------------------------ shaping
 
@@ -33,7 +34,8 @@ const SELECT = `
          (SELECT coalesce(json_agg(json_build_object('id', v.id::text, 'name', v.name, 'released', v.released, 'archived', v.archived) ORDER BY v.position, v.id), '[]'::json)
             FROM issue_versions iv JOIN versions v ON v.id = iv.version_id WHERE iv.issue_id = i.id) AS fix_versions,
          (SELECT coalesce(json_agg(json_build_object('id', c.id::text, 'name', c.name) ORDER BY lower(c.name), c.id), '[]'::json)
-            FROM issue_components ic JOIN components c ON c.id = ic.component_id WHERE ic.issue_id = i.id) AS components`;
+            FROM issue_components ic JOIN components c ON c.id = ic.component_id WHERE ic.issue_id = i.id) AS components,
+         (SELECT coalesce(sum(wl.time_spent_s), 0)::int FROM worklogs wl WHERE wl.issue_id = i.id) AS time_spent_s`;
 export const SELECT_FROM = `${SELECT} ${FROM}
   LEFT JOIN issues par ON par.id = i.parent_id
   LEFT JOIN issue_types part ON part.id = par.type_id`;
@@ -72,6 +74,7 @@ export function issueJson(r: any) {
       sprint: r.sprint_id ? { id: String(r.sprint_id), name: r.sp_name, state: r.sp_state } : null,
       fixVersions: r.fix_versions ?? [],
       components: r.components ?? [],
+      ...timeFields(r),
     },
   };
 }
@@ -132,6 +135,7 @@ const CreateIssue = z.object({
     sprint: z.object({ id: z.union([z.string(), z.number()]) }).nullish(),
     fixVersions: z.array(z.any()).optional(),
     components: z.array(z.any()).optional(),
+    timetracking: z.object({ originalEstimate: z.union([z.string(), z.number()]).nullish(), remainingEstimate: z.union([z.string(), z.number()]).nullish() }).nullish(),
   }).passthrough(), // customfield_<id> keys are validated against the space's fields
   watchers: z.array(z.union([z.string(), z.number()])).optional(),
 });
@@ -250,6 +254,12 @@ export async function createIssue(db: Db, user: AuthUser, input: unknown): Promi
     const target = { id: row.id, project_id: project.id };
     if (fields.fixVersions?.length) await setRelation(q, user.id, target, 'versions', 'SET', fields.fixVersions, logChange);
     if (fields.components?.length) await setRelation(q, user.id, target, 'components', 'SET', fields.components, logChange);
+    const tt = fields.timetracking;
+    if (tt?.originalEstimate != null || tt?.remainingEstimate != null) {
+      const orig = tt.originalEstimate != null ? parseDuration(tt.originalEstimate) : null;
+      const rem = tt.remainingEstimate != null ? parseDuration(tt.remainingEstimate, { allowZero: true }) : orig;
+      await q.query(`UPDATE issues SET original_estimate_s = $1, remaining_estimate_s = $2 WHERE id = $3`, [orig, rem, row.id]);
+    }
     await logChange(q, row.id, user.id, 'created', {}, { v: row.id, s: key });
     return { id: row.id, key };
   });
@@ -302,6 +312,18 @@ export async function editField(db: Db, user: AuthUser, key: string, fieldId: st
         ]);
         if (!pr) throw bad('Invalid priority');
         return set('priority_id', pr.id, { v: row.priority_id, s: row.pr_name }, { v: pr.id, s: pr.name });
+      }
+      case 'timeoriginalestimate': case 'originalestimate': case 'timeestimate': case 'remainingestimate': {
+        return setEstimate(q, user.id, row, field.includes('original') ? 'original' : 'remaining', value, logChange);
+      }
+      case 'timetracking': {
+        const t = z.object({ originalEstimate: z.union([z.string(), z.number()]).nullish(), remainingEstimate: z.union([z.string(), z.number()]).nullish() }).parse(value ?? {});
+        if (t.originalEstimate !== undefined) await setEstimate(q, user.id, row, 'original', t.originalEstimate, logChange);
+        if (t.remainingEstimate !== undefined) {
+          const [fresh] = await q.query(`SELECT id, original_estimate_s, remaining_estimate_s FROM issues WHERE id = $1`, [row.id]);
+          await setEstimate(q, user.id, fresh, 'remaining', t.remainingEstimate, logChange);
+        }
+        return;
       }
       case 'fixversions': case 'fixversion': case 'components': case 'component': {
         return setRelation(q, user.id, row, field.startsWith('fix') ? 'versions' : 'components', operation, value, logChange);
@@ -466,6 +488,9 @@ export function issueRoutes(db: Db, store: FileStore) {
       out.permissions.CREATE_ATTACHMENTS = can(role, 'CREATE_ATTACHMENTS', user.isSiteAdmin);
       out.permissions.DELETE_OWN_ATTACHMENTS = can(role, 'DELETE_OWN_ATTACHMENTS', user.isSiteAdmin);
       out.permissions.DELETE_ALL_ATTACHMENTS = can(role, 'DELETE_ALL_ATTACHMENTS', user.isSiteAdmin);
+      for (const p of ['WORK_ON_ISSUES', 'EDIT_OWN_WORKLOGS', 'EDIT_ALL_WORKLOGS', 'DELETE_OWN_WORKLOGS', 'DELETE_ALL_WORKLOGS'] as const) {
+        out.permissions[p] = can(role, p, user.isSiteAdmin);
+      }
       if (req.query.updateHistory !== 'false') {
         await db.query(
           `INSERT INTO recent_views (user_id, entity_type, entity_id) VALUES ($1,'issue',$2)

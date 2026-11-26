@@ -22,7 +22,8 @@ import { oidcConfigFromEnv, oidcRoutes, type OidcConfig } from './oidc.js';
 import { auditRoutes, auditTrail } from './audit.js';
 import { webhookRoutes } from './webhooks.js';
 import { versionRoutes } from './versions.js';
-import { logChange } from './issues.js';
+import { logChange, loadIssue } from './issues.js';
+import { worklogRoutes } from './timetracking.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -64,6 +65,7 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string; oidc?: OidcCon
     auditRoutes(db),
     webhookRoutes(db),
     versionRoutes(db, logChange),
+    worklogRoutes(db, loadIssue, logChange),
   );
   app.use('/api', (_req, res) => {
     res.status(404).json({ errorMessages: ['Not found'] });

@@ -506,3 +506,20 @@ CREATE TABLE IF NOT EXISTS issue_components (
   PRIMARY KEY (issue_id, component_id)
 );
 CREATE INDEX IF NOT EXISTS issue_components_component ON issue_components (component_id);
+
+-- ---------------------------------------------------------------- Phase 5: time tracking + WIP limits
+ALTER TABLE issues ADD COLUMN IF NOT EXISTS original_estimate_s INT;
+ALTER TABLE issues ADD COLUMN IF NOT EXISTS remaining_estimate_s INT;
+CREATE TABLE IF NOT EXISTS worklogs (
+  id            SERIAL PRIMARY KEY,
+  issue_id      INT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+  author_id     INT NOT NULL REFERENCES users(id),
+  started_at    TIMESTAMPTZ NOT NULL,
+  time_spent_s  INT NOT NULL CHECK (time_spent_s > 0),
+  comment       TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS worklogs_issue ON worklogs (issue_id);
+CREATE INDEX IF NOT EXISTS worklogs_author ON worklogs (author_id, started_at);
+ALTER TABLE statuses ADD COLUMN IF NOT EXISTS wip_limit INT;

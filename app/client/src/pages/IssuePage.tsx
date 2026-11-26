@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { FIELD_LABEL, LogWorkDialog, TimePanel, WorkLogList } from '../TimeTracking';
 import { MultiRefField } from './Releases';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, ApiError, type AutomationRun, type Comment, type Issue, type Priority, type Sprint, type Transition, type User } from '../api';
@@ -22,7 +23,8 @@ export function IssuePage() {
   const [users, setUsers] = useState<User[]>([]);
   const [priorities, setPriorities] = useState<Priority[]>([]);
   const [sprints, setSprints] = useState<Sprint[]>([]);
-  const [tab, setTab] = useState<'comments' | 'history'>('comments');
+  const [tab, setTab] = useState<'comments' | 'history' | 'worklog'>('comments');
+  const [logging, setLogging] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [runs, setRuns] = useState<AutomationRun[]>([]);
@@ -88,6 +90,7 @@ export function IssuePage() {
   return (
     <div className="page issue-page">
       {remote && <div className="remote-banner" role="status">↻ Updated by a teammate just now</div>}
+      {logging && <LogWorkDialog issue={issue} onClose={() => setLogging(false)} onSaved={() => { setLogging(false); setTab('worklog'); run(async () => {}); }} />}
       <div className="crumbs">
         <Link to="/projects">Spaces</Link> / <Link to={`/projects/${f.project.key}/board`}>{f.project.name}</Link> /{' '}
         {f.parent && <><Link to={`/browse/${f.parent.key}`}>{f.parent.key}</Link> / </>}
@@ -141,6 +144,7 @@ export function IssuePage() {
           <div className="tabs small" role="tablist">
             <button role="tab" aria-selected={tab === 'comments'} className={tab === 'comments' ? 'on' : ''} onClick={() => setTab('comments')}>Comments</button>
             <button role="tab" aria-selected={tab === 'history'} className={tab === 'history' ? 'on' : ''} onClick={() => setTab('history')}>History</button>
+            <button role="tab" aria-selected={tab === 'worklog'} className={tab === 'worklog' ? 'on' : ''} onClick={() => setTab('worklog')}>Work log</button>
           </div>
           {tab === 'comments' ? (
             <div className="comments">
@@ -166,6 +170,8 @@ export function IssuePage() {
                 <CommentItem key={c.id} c={c} mine={c.author.accountId === user?.accountId} issueKey={key} people={users} onChange={() => run(async () => {})} />
               ))}
             </div>
+          ) : tab === 'worklog' ? (
+            <WorkLogList issue={issue} me={user} perms={issue.permissions ?? {}} onChanged={() => run(async () => {})} onError={toast} />
           ) : (
             <ul className="history">
               {issue.changelog?.map((h) => (
@@ -173,7 +179,7 @@ export function IssuePage() {
                   <Avatar user={h.author} size={22} />
                   <div>
                     <strong>{h.author.displayName}</strong>{' '}
-                    {h.items[0].field === 'created' ? 'created the work item' : <>changed the <strong>{h.items[0].field}</strong></>}
+                    {h.items[0].field === 'created' ? 'created the work item' : <>changed the <strong>{FIELD_LABEL[h.items[0].field] ?? h.items[0].field}</strong></>}
                     <span className="muted small"> · {timeAgo(h.created)}</span>
                     {h.items[0].field !== 'created' && (
                       <div className="change"><span className="old">{h.items[0].fromString ?? 'None'}</span> → <span>{h.items[0].toString ?? 'None'}</span></div>
@@ -279,6 +285,9 @@ export function IssuePage() {
             </Field>
             <Field label="Start date">
               <input type="date" value={f.startdate ?? ''} disabled={!can('EDIT_ISSUES')} aria-label="Start date" onChange={(e) => edit('startdate', e.target.value || null)} />
+            </Field>
+            <Field label="Time tracking">
+              <TimePanel issue={issue} canEdit={can('EDIT_ISSUES')} canLog={can('WORK_ON_ISSUES')} onEdit={edit} onLog={() => setLogging(true)} />
             </Field>
             <Field label="Story points">
               <input type="number" min={0} step={0.5} defaultValue={f.storypoints ?? ''} key={String(f.storypoints)} disabled={!can('EDIT_ISSUES')} aria-label="Story points"
