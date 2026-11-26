@@ -24,6 +24,8 @@ import { webhookRoutes } from './webhooks.js';
 import { versionRoutes } from './versions.js';
 import { logChange, loadIssue } from './issues.js';
 import { worklogRoutes } from './timetracking.js';
+import { securityRoutes } from './security.js';
+import { voteRoutes } from './votes.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -66,6 +68,8 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string; oidc?: OidcCon
     webhookRoutes(db),
     versionRoutes(db, logChange),
     worklogRoutes(db, loadIssue, logChange),
+    securityRoutes(db),
+    voteRoutes(db, loadIssue, logChange),
   );
   app.use('/api', (_req, res) => {
     res.status(404).json({ errorMessages: ['Not found'] });

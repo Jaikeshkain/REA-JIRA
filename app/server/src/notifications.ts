@@ -6,6 +6,7 @@
  *   - one notification per person per event (a mention outranks a "commented" for the same comment).
  * Email delivery is a later phase; the rows here are what an email worker would send.
  */
+import { visibleToRow } from './security.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import type { Db } from './db.js';
@@ -29,6 +30,7 @@ export async function notify(
      FROM issues i JOIN users u ON u.tenant_id = i.tenant_id AND u.active
      WHERE i.id = $1 AND u.id = ANY($5::int[])
        AND (u.is_site_admin OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = i.project_id AND pm.user_id = u.id))
+       AND ${visibleToRow('u.id', 'u.is_site_admin')}
      RETURNING user_id`,
     [ev.issueId, ev.actorId, ev.kind, JSON.stringify(ev.data ?? {}), ids],
   );

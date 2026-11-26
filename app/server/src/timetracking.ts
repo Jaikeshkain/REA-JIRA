@@ -15,6 +15,7 @@ import type { AuthUser } from './auth.js';
 import { h, bad, notFound, forbidden } from './http.js';
 import { can } from './permissions.js';
 import { userRef } from './access.js';
+import { assertNotArchived } from './votes.js';
 
 export const HOURS_PER_DAY = 8;
 export const DAYS_PER_WEEK = 5;
@@ -157,6 +158,7 @@ export function worklogRoutes(db: Db, loadIssue: LoadIssue, log: Log) {
     const user = req.user!;
     const { row, role } = await loadIssue(db, user, String(req.params.key));
     if (!can(role, 'WORK_ON_ISSUES', user.isSiteAdmin)) throw forbidden('WORK_ON_ISSUES');
+    assertNotArchived(row);
     const body = WorklogInput.parse({ ...req.query, ...(req.body ?? {}) });
     const secs = body.timeSpentSeconds ?? parseDuration(body.timeSpent);
     const a = Adjust.parse(body);

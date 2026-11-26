@@ -114,6 +114,9 @@ Components on work items with History, JQL `fixVersion` / `component` incl. rele
 Estimates, work log with estimate adjustment (auto/leave/new/manual), History, JQL time fields + worklogAuthor /
 worklogDate, per-status WIP limits on the board.
 
-## Phase 5 — candidates
-Votes, JQL history
-operators (`was`, `changed`), archiving work items, issue-level security.
+## Phase 5 — part 4 done: votes, JQL history, archiving, security levels
+Votes (JQL votes/voter), WAS / WAS NOT / WAS IN / CHANGED with FROM TO BY AFTER BEFORE ON DURING, archive/restore
+(hidden everywhere, read-only, `archived = true`), per-space security levels enforced in every listing.
+
+## Phase 5 — complete
+All items from the requirements' Phase 2–3 roadmap are built.

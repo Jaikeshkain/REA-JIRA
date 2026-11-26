@@ -523,3 +523,25 @@ CREATE TABLE IF NOT EXISTS worklogs (
 CREATE INDEX IF NOT EXISTS worklogs_issue ON worklogs (issue_id);
 CREATE INDEX IF NOT EXISTS worklogs_author ON worklogs (author_id, started_at);
 ALTER TABLE statuses ADD COLUMN IF NOT EXISTS wip_limit INT;
+
+-- ---------------------------------------------------------------- Phase 5: votes, archiving, security levels
+CREATE TABLE IF NOT EXISTS votes (
+  issue_id    INT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+  user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (issue_id, user_id)
+);
+ALTER TABLE issues ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+ALTER TABLE issues ADD COLUMN IF NOT EXISTS archived_by INT REFERENCES users(id) ON DELETE SET NULL;
+CREATE TABLE IF NOT EXISTS security_levels (
+  id                SERIAL PRIMARY KEY,
+  project_id        INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name              TEXT NOT NULL,
+  description       TEXT NOT NULL DEFAULT '',
+  roles             TEXT[] NOT NULL DEFAULT '{admin}',
+  user_ids          INT[] NOT NULL DEFAULT '{}',
+  include_reporter  BOOLEAN NOT NULL DEFAULT true,
+  include_assignee  BOOLEAN NOT NULL DEFAULT true,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE issues ADD COLUMN IF NOT EXISTS security_level_id INT REFERENCES security_levels(id) ON DELETE SET NULL;

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { visibleSql } from './security.js';
 import { z } from 'zod';
 import type { Db } from './db.js';
 import type { AuthUser } from './auth.js';
@@ -154,7 +155,8 @@ export function projectRoutes(db: Db) {
                 r.display_name AS r_name, par.key AS parent_key, par.summary AS parent_summary,
                 sp.name AS sp_name, sp.state AS sp_state
          ${FROM} LEFT JOIN issues par ON par.id = i.parent_id
-         WHERE i.project_id = $1 AND t.hierarchy_level >= 0 AND t.hierarchy_level < 1 ${filter}
+         WHERE i.project_id = $1 AND t.hierarchy_level >= 0 AND t.hierarchy_level < 1 AND i.archived_at IS NULL
+           AND ${visibleSql(String(Number(user.id)), user.isSiteAdmin)} ${filter}
          ORDER BY i.rank, i.id`,
         params,
       );
@@ -188,14 +190,15 @@ export function projectRoutes(db: Db) {
       const g = groups[by];
       if (!g) throw bad(`Cannot group by ${by}`);
       const order = by === 'status' ? 's.position' : by === 'priority' ? 'pr.position' : 'count DESC';
-      const rows = await db.query(`SELECT ${g}, count(*)::int AS count ${FROM} WHERE i.project_id = $1 GROUP BY ${g} ORDER BY ${order}`, [p.id]);
+      const seen = `i.archived_at IS NULL AND ${visibleSql(String(Number(user.id)), user.isSiteAdmin)}`;
+      const rows = await db.query(`SELECT ${g}, count(*)::int AS count ${FROM} WHERE i.project_id = $1 AND ${seen} GROUP BY ${g} ORDER BY ${order}`, [p.id]);
       const [totals] = await db.query(
         `SELECT count(*)::int AS total,
                 count(*) FILTER (WHERE s.category = 'done' AND i.resolved_at > now() - interval '7 days')::int AS done7,
                 count(*) FILTER (WHERE i.created_at > now() - interval '7 days')::int AS created7,
                 count(*) FILTER (WHERE i.updated_at > now() - interval '7 days')::int AS updated7,
                 count(*) FILTER (WHERE i.due_date BETWEEN current_date AND current_date + 7 AND s.category <> 'done')::int AS due7
-         ${FROM} WHERE i.project_id = $1`,
+         ${FROM} WHERE i.project_id = $1 AND ${seen}`,
         [p.id],
       );
       return {
@@ -220,10 +223,10 @@ export function projectRoutes(db: Db) {
         `SELECT * FROM (
            SELECT 'change' AS kind, c.created_at, c.field, c.from_string, c.to_string, i.key, i.summary,
                   u.id AS uid, u.display_name, u.avatar_color
-           FROM changelog c JOIN issues i ON i.id = c.issue_id JOIN users u ON u.id = c.actor_id WHERE i.project_id = $1
+           FROM changelog c JOIN issues i ON i.id = c.issue_id JOIN users u ON u.id = c.actor_id WHERE i.project_id = $1 AND ${visibleSql(String(Number(user.id)), user.isSiteAdmin)}
            UNION ALL
            SELECT 'comment', cm.created_at, 'comment', NULL, NULL, i.key, i.summary, u.id, u.display_name, u.avatar_color
-           FROM comments cm JOIN issues i ON i.id = cm.issue_id JOIN users u ON u.id = cm.author_id WHERE i.project_id = $1
+           FROM comments cm JOIN issues i ON i.id = cm.issue_id JOIN users u ON u.id = cm.author_id WHERE i.project_id = $1 AND ${visibleSql(String(Number(user.id)), user.isSiteAdmin)}
          ) x ORDER BY created_at DESC LIMIT 50`,
         [p.id],
       );

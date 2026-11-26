@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { SecurityField } from './Security';
 import { FIELD_LABEL, LogWorkDialog, TimePanel, WorkLogList } from '../TimeTracking';
 import { MultiRefField } from './Releases';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -90,6 +91,7 @@ export function IssuePage() {
   return (
     <div className="page issue-page">
       {remote && <div className="remote-banner" role="status">↻ Updated by a teammate just now</div>}
+      {f.archived && <div className="archived-banner" role="status">🗄 Archived {f.archivedDate ? new Date(f.archivedDate).toLocaleDateString() : ''}. It's read-only and hidden from boards, lists and search.</div>}
       {logging && <LogWorkDialog issue={issue} onClose={() => setLogging(false)} onSaved={() => { setLogging(false); setTab('worklog'); run(async () => {}); }} />}
       <div className="crumbs">
         <Link to="/projects">Spaces</Link> / <Link to={`/projects/${f.project.key}/board`}>{f.project.name}</Link> /{' '}
@@ -212,6 +214,15 @@ export function IssuePage() {
                 ))}
               </Popover>
             </div>
+            {(() => {
+              const v = f.votes ?? { votes: 0 };
+              const own = f.reporter?.accountId === user?.accountId;
+              const why = own ? 'You can’t vote for work you reported' : f.resolution ? 'You can’t vote for resolved work' : f.archived ? 'Archived' : undefined;
+              return (
+                <button className="btn subtle" aria-pressed={!!v.hasVoted} disabled={!!why && !v.hasVoted} title={why ?? (v.hasVoted ? 'Remove your vote' : 'Vote for this work item')}
+                  onClick={() => run(() => api.vote(key, !v.hasVoted))}>{v.hasVoted ? '▲ Voted' : '△ Vote'} {v.votes}</button>
+              );
+            })()}
             <button className="btn subtle" onClick={() => run(() => api.watch(key, !f.watches.isWatching))} aria-pressed={!!f.watches.isWatching}>
               {f.watches.isWatching ? '👁 Watching' : '👁 Watch'} {f.watches.watchCount}
             </button>
@@ -227,6 +238,13 @@ export function IssuePage() {
                     toast(`Deleted ${key}`);
                     nav(`/projects/${f.project.key}/board`);
                   }}>Delete</button>
+                )}
+                {can(f.archived ? 'UNARCHIVE_ISSUES' : 'ARCHIVE_ISSUES') && f.issuetype.hierarchyLevel >= 0 && (
+                  <button className="menu-item" onClick={() => {
+                    setMoreOpen(false);
+                    if (!f.archived && !confirm(`Archive ${key}${issue.children?.length ? ` and its ${issue.children.length} child item(s)` : ''}? It disappears from boards, lists and search, and becomes read-only. You can restore it later.`)) return;
+                    run(async () => { const r = await api.archive(key, !f.archived); toast(f.archived ? `Restored ${r.count} work item(s)` : `Archived ${r.count} work item(s)`); });
+                  }}>{f.archived ? 'Restore from archive' : 'Archive'}</button>
                 )}
                 <button className="menu-item" onClick={() => { setMoreOpen(false); navigator.clipboard?.writeText(key); toast('Key copied'); }}>Copy key</button>
               </Popover>
@@ -273,6 +291,9 @@ export function IssuePage() {
                 ))}
                 {can('EDIT_ISSUES') && <LabelAdder onAdd={(l) => edit('labels', [l], 'ADD')} />}
               </div>
+            </Field>
+            <Field label="Security level">
+              <SecurityField issue={issue} canSet={can('SET_ISSUE_SECURITY') && !f.archived} onSet={(v) => edit('security', v)} />
             </Field>
             <Field label="Fix versions">
               <MultiRefField kind="fixVersions" issue={issue} canEdit={can('EDIT_ISSUES')} onEdit={edit} />

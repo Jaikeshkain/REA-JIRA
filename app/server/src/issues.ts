@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { canSee, setLevel, visibleSql } from './security.js';
+import { assertNotArchived } from './votes.js';
 import { emitWebhook, issueSnapshot } from './webhooks.js';
 import { z } from 'zod';
 import type { Db } from './db.js';
@@ -35,7 +37,9 @@ const SELECT = `
             FROM issue_versions iv JOIN versions v ON v.id = iv.version_id WHERE iv.issue_id = i.id) AS fix_versions,
          (SELECT coalesce(json_agg(json_build_object('id', c.id::text, 'name', c.name) ORDER BY lower(c.name), c.id), '[]'::json)
             FROM issue_components ic JOIN components c ON c.id = ic.component_id WHERE ic.issue_id = i.id) AS components,
-         (SELECT coalesce(sum(wl.time_spent_s), 0)::int FROM worklogs wl WHERE wl.issue_id = i.id) AS time_spent_s`;
+         (SELECT coalesce(sum(wl.time_spent_s), 0)::int FROM worklogs wl WHERE wl.issue_id = i.id) AS time_spent_s,
+         (SELECT count(*)::int FROM votes vo WHERE vo.issue_id = i.id) AS vote_count,
+         (SELECT name FROM security_levels sec WHERE sec.id = i.security_level_id) AS sec_name`;
 export const SELECT_FROM = `${SELECT} ${FROM}
   LEFT JOIN issues par ON par.id = i.parent_id
   LEFT JOIN issue_types part ON part.id = par.type_id`;
@@ -75,6 +79,10 @@ export function issueJson(r: any) {
       fixVersions: r.fix_versions ?? [],
       components: r.components ?? [],
       ...timeFields(r),
+      votes: { votes: r.vote_count ?? 0 },
+      security: r.security_level_id ? { id: String(r.security_level_id), name: r.sec_name } : null,
+      archived: !!r.archived_at,
+      archivedDate: r.archived_at ?? null,
     },
   };
 }
@@ -86,6 +94,7 @@ export async function loadIssue(db: Db, user: AuthUser, key: string) {
   if (!row) throw notFound(`Issue ${key}`);
   const role = await roleIn(db, user, row.project_id);
   if (!can(role, 'BROWSE_PROJECTS', user.isSiteAdmin)) throw notFound(`Issue ${key}`);
+  if (row.security_level_id && !(await canSee(db, user, row.id))) throw notFound(`Issue ${key}`); // security level
   return { row, role };
 }
 
@@ -136,6 +145,7 @@ const CreateIssue = z.object({
     fixVersions: z.array(z.any()).optional(),
     components: z.array(z.any()).optional(),
     timetracking: z.object({ originalEstimate: z.union([z.string(), z.number()]).nullish(), remainingEstimate: z.union([z.string(), z.number()]).nullish() }).nullish(),
+    security: z.union([z.object({ id: z.union([z.string(), z.number()]).optional(), name: z.string().optional() }), z.string()]).nullish(),
   }).passthrough(), // customfield_<id> keys are validated against the space's fields
   watchers: z.array(z.union([z.string(), z.number()])).optional(),
 });
@@ -254,6 +264,10 @@ export async function createIssue(db: Db, user: AuthUser, input: unknown): Promi
     const target = { id: row.id, project_id: project.id };
     if (fields.fixVersions?.length) await setRelation(q, user.id, target, 'versions', 'SET', fields.fixVersions, logChange);
     if (fields.components?.length) await setRelation(q, user.id, target, 'components', 'SET', fields.components, logChange);
+    if (fields.security) {
+      if (!can(await roleIn(q, user, project.id), 'SET_ISSUE_SECURITY', user.isSiteAdmin)) throw forbidden('SET_ISSUE_SECURITY');
+      await setLevel(q, user, { id: row.id, project_id: project.id, security_level_id: null }, fields.security, logChange);
+    }
     const tt = fields.timetracking;
     if (tt?.originalEstimate != null || tt?.remainingEstimate != null) {
       const orig = tt.originalEstimate != null ? parseDuration(tt.originalEstimate) : null;
@@ -273,7 +287,8 @@ export async function editField(db: Db, user: AuthUser, key: string, fieldId: st
   const { row, role } = await loadIssue(db, user, key);
   const { operation, value } = FieldEdit.parse(input ?? {});
   const field = fieldId.toLowerCase();
-  const need = field === 'assignee' ? 'ASSIGN_ISSUES' : field === 'reporter' ? 'MODIFY_REPORTER' : 'EDIT_ISSUES';
+  assertNotArchived(row);
+  const need = field === 'assignee' ? 'ASSIGN_ISSUES' : field === 'reporter' ? 'MODIFY_REPORTER' : field === 'security' ? 'SET_ISSUE_SECURITY' : 'EDIT_ISSUES';
   if (!can(role, need as any, user.isSiteAdmin)) throw forbidden(need);
   const afterId = await lastChangeId(db, row.id);
 
@@ -313,6 +328,7 @@ export async function editField(db: Db, user: AuthUser, key: string, fieldId: st
         if (!pr) throw bad('Invalid priority');
         return set('priority_id', pr.id, { v: row.priority_id, s: row.pr_name }, { v: pr.id, s: pr.name });
       }
+      case 'security': return setLevel(q, user, row, value, logChange);
       case 'timeoriginalestimate': case 'originalestimate': case 'timeestimate': case 'remainingestimate': {
         return setEstimate(q, user.id, row, field.includes('original') ? 'original' : 'remaining', value, logChange);
       }
@@ -404,6 +420,7 @@ export async function editField(db: Db, user: AuthUser, key: string, fieldId: st
 /** Move a work item by transition id (conditions + validators apply). Fires automation after commit. */
 export async function transitionIssue(db: Db, user: AuthUser, key: string, transitionId: number) {
   const { row, role } = await loadIssue(db, user, key);
+  assertNotArchived(row);
   if (!can(role, 'TRANSITION_ISSUES', user.isSiteAdmin)) throw forbidden('TRANSITION_ISSUES');
   const afterId = await lastChangeId(db, row.id);
   await db.tx((q) => applyTransition(q, user, role, row, transitionId));
@@ -470,8 +487,10 @@ export function issueRoutes(db: Db, store: FileStore) {
       ).map(issueJson);
       const [watching] = await db.query(`SELECT 1 FROM watchers WHERE issue_id = $1 AND user_id = $2`, [row.id, user.id]);
       out.fields.watches.isWatching = !!watching;
+      const [voted] = await db.query(`SELECT 1 FROM votes WHERE issue_id = $1 AND user_id = $2`, [row.id, user.id]);
+      out.fields.votes.hasVoted = !!voted;
       out.permissions = Object.fromEntries(
-        ['EDIT_ISSUES', 'ASSIGN_ISSUES', 'TRANSITION_ISSUES', 'DELETE_ISSUES', 'ADD_COMMENTS', 'MANAGE_WATCHERS'].map((p) => [
+        ['EDIT_ISSUES', 'ASSIGN_ISSUES', 'TRANSITION_ISSUES', 'DELETE_ISSUES', 'ADD_COMMENTS', 'MANAGE_WATCHERS', 'SET_ISSUE_SECURITY', 'ARCHIVE_ISSUES', 'UNARCHIVE_ISSUES', 'VIEW_VOTERS_AND_WATCHERS'].map((p) => [
           p,
           can(role, p as any, user.isSiteAdmin),
         ]),
@@ -615,6 +634,7 @@ export function issueRoutes(db: Db, store: FileStore) {
       const user = req.user!;
       const { row, role } = await loadIssue(db, user, String(req.params.key));
       if (!can(role, 'ADD_COMMENTS', user.isSiteAdmin)) throw forbidden('ADD_COMMENTS');
+      assertNotArchived(row);
       const body = z.object({ body: z.any(), parentId: z.union([z.string(), z.number()]).nullish() }).parse(req.body);
       const doc = await linkMentions(db, row.project_id, sanitizeAdf(body.body));
       if (!doc || !adfToText(doc)) throw bad('Comment cannot be empty');
@@ -725,7 +745,7 @@ export function issueRoutes(db: Db, store: FileStore) {
       const user = req.user!;
       const rows = await db.query(
         `${SELECT_FROM} JOIN recent_views rv ON rv.entity_type = 'issue' AND rv.entity_id = i.id AND rv.user_id = $1
-         WHERE i.tenant_id = $2 ORDER BY rv.viewed_at DESC LIMIT 20`,
+         WHERE i.tenant_id = $2 AND ${visibleSql('$1', user.isSiteAdmin)} ORDER BY rv.viewed_at DESC LIMIT 20`,
         [user.id, user.tenantId],
       );
       return { issues: rows.map(issueJson) };

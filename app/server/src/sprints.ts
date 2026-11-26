@@ -4,6 +4,7 @@
  * keeps done work in the closed sprint and moves open work to the backlog or another sprint; the board shows
  * only the active sprint when Sprints is enabled.
  */
+import { visibleSql } from './security.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import type { Db } from './db.js';
@@ -274,7 +275,7 @@ export function sprintRoutes(db: Db) {
       );
       const rows = await db.query(
         `${SELECT_FROM}
-         WHERE i.project_id = $1 AND ${LEVEL0}
+         WHERE i.project_id = $1 AND ${LEVEL0} AND i.archived_at IS NULL AND ${visibleSql(String(Number(req.user!.id)), req.user!.isSiteAdmin)}
            AND (i.sprint_id = ANY($2::int[]) OR (i.sprint_id IS NULL AND s.category <> 'done'))
          ORDER BY i.rank, i.id`,
         [p.id, sprints.map((s) => s.id)],
@@ -311,7 +312,7 @@ export function sprintRoutes(db: Db) {
                 t.name AS type, t.color AS type_color
          FROM sprint_scope sc JOIN issues i ON i.id = sc.issue_id JOIN statuses st ON st.id = i.status_id
          JOIN issue_types t ON t.id = i.type_id
-         WHERE sc.sprint_id = $1 ORDER BY sc.added_at, sc.id`,
+         WHERE sc.sprint_id = $1 AND ${visibleSql(String(Number(user.id)), user.isSiteAdmin)} ORDER BY sc.added_at, sc.id`,
         [s.id],
       );
       const start = new Date(s.start_date);

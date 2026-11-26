@@ -55,6 +55,10 @@ const RULES: [RegExp, string | null, AuditCategory, string][] = [
   [/^\/api\/version\/\d+\/release$/, 'POST', 'releases', 'Released a version'],
   [/^\/api\/version(\/\d+)?$/, null, 'releases', 'Changed versions'],
   [/^\/api\/component(\/\d+)?$/, null, 'releases', 'Changed components'],
+  [/^\/api\/project\/([^/]+)\/security-levels$/, 'POST', 'permissions', 'Created a security level'],
+  [/^\/api\/security-level\/\d+$/, null, 'permissions', 'Changed a security level'],
+  [/^\/api\/issue\/([^/]+)\/archive$/, 'POST', 'spaces', 'Archived a work item'],
+  [/^\/api\/issue\/([^/]+)\/restore$/, 'POST', 'spaces', 'Restored a work item'],
 ];
 const methodVerb: Record<string, string> = { POST: 'created', PUT: 'updated', PATCH: 'updated', DELETE: 'deleted' };
 

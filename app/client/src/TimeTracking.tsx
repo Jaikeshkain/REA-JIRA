@@ -146,4 +146,5 @@ export function WorkLogList({ issue, me, perms, onChanged, onError }: {
 /** History shows Jira's internal field names; give the time ones readable labels. */
 export const FIELD_LABEL: Record<string, string> = {
   timeoriginalestimate: 'Original estimate', timeestimate: 'Remaining estimate', timespent: 'Time spent',
+  security: 'Security level', archived: 'Archived',
 };

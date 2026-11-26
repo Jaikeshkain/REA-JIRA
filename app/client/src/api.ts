@@ -32,6 +32,10 @@ export interface Issue {
     components?: { id: string; name: string }[];
     timetracking?: { originalEstimate?: string; originalEstimateSeconds?: number; remainingEstimate?: string; remainingEstimateSeconds?: number; timeSpent?: string; timeSpentSeconds?: number };
     timespent?: number | null;
+    votes?: { votes: number; hasVoted?: boolean };
+    security?: { id: string; name: string } | null;
+    archived?: boolean;
+    archivedDate?: string | null;
     issuelinks?: IssueLink[];
     attachment?: Attachment[];
   };
@@ -66,6 +70,7 @@ export interface Version {
 }
 export interface Component { id: string; name: string; description: string; projectId: string; lead: { accountId: string; displayName: string } | null; issueCount: number }
 export interface Worklog { id: string; issueId: string; author: User | null; comment: string; started: string; created: string; updated: string; timeSpent: string; timeSpentSeconds: number }
+export interface SecurityLevel { id: string; name: string; description: string; roles: string[]; users: string[]; includeReporter: boolean; includeAssignee: boolean; issueCount: number }
 export interface Dependency { id: string; blocker: string; blocked: string }
 export interface LinkType { id: string; name: string; inward: string; outward: string }
 export interface LinkedIssue {
@@ -338,6 +343,12 @@ export const api = {
   addWorklog: (key: string, body: { timeSpent: string; started?: string; comment?: string; adjustEstimate?: string; newEstimate?: string }) => call<Worklog>('POST', `/issue/${key}/worklog`, body),
   updateWorklog: (key: string, id: string, body: { timeSpent?: string; started?: string; comment?: string; adjustEstimate?: string; newEstimate?: string }) => call<Worklog>('PUT', `/issue/${key}/worklog/${id}`, body),
   deleteWorklog: (key: string, id: string) => call('DELETE', `/issue/${key}/worklog/${id}`),
+  vote: (key: string, on: boolean) => call<{ votes: number; hasVoted: boolean }>(on ? 'POST' : 'DELETE', `/issue/${key}/votes`),
+  archive: (key: string, on: boolean) => call<{ count: number }>('POST', `/issue/${key}/${on ? 'archive' : 'restore'}`),
+  securityLevels: (key: string) => call<SecurityLevel[]>('GET', `/project/${key}/security-levels`),
+  createSecurityLevel: (key: string, body: { name: string; description?: string; roles: string[]; users?: string[]; includeReporter: boolean; includeAssignee: boolean }) => call<SecurityLevel>('POST', `/project/${key}/security-levels`, body),
+  updateSecurityLevel: (id: string, body: Partial<{ name: string; description: string; roles: string[]; users: string[]; includeReporter: boolean; includeAssignee: boolean }>) => call<SecurityLevel>('PUT', `/security-level/${id}`, body),
+  deleteSecurityLevel: (id: string) => call('DELETE', `/security-level/${id}`),
   dependencies: (key: string) => call<{ dependencies: Dependency[] }>('GET', `/project/${key}/dependencies`),
   deleteAttachment: (id: string) => call('DELETE', `/attachment/${id}`),
   /** Raw-body upload; the server stores bytes as-is (max size enforced server-side). */

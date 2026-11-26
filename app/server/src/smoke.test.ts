@@ -1456,6 +1456,110 @@ try {
     assert.equal((await call(dev, 'GET', '/project/DEMO/board')).body.columns.find((c: any) => c.status.id === prog.id).wipLimit, null);
   });
 
+  await test('votes: vote once, not on own or resolved work, voters need permission, JQL', async () => {
+    const k = (await call(admin, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'Vote me' } })).body.key;
+    assert.equal((await call(admin, 'POST', `/issue/${k}/votes`)).status, 400, 'reporter can’t vote');
+    const v = (await call(dev, 'POST', `/issue/${k}/votes`)).body;
+    assert.deepEqual([v.votes, v.hasVoted], [1, true]);
+    assert.equal((await call(dev, 'POST', `/issue/${k}/votes`)).body.votes, 1, 'once');
+    const seen = (await call(viewer, 'POST', `/issue/${k}/votes`)).body;
+    assert.equal(seen.votes, 2);
+    assert.deepEqual(seen.voters.map((u: any) => u.displayName).sort(), ['Dana Dev', 'Vic Viewer']);
+    assert.equal((await call(dev, 'GET', `/issue/${k}`)).body.fields.votes.votes, 2);
+    const jql = async (q: string) => (await call(dev, 'POST', '/search/jql', { jql: q, maxResults: 100 })).body;
+    assert.equal((await jql(`key = ${k} AND votes >= 2 AND voter = currentUser()`)).total, 1);
+    assert.equal((await jql(`project = DEMO AND votes > 0 ORDER BY votes DESC`)).issues[0].key, k);
+    assert.equal((await call(dev, 'DELETE', `/issue/${k}/votes`)).body.votes, 1);
+    assert.equal((await jql(`key = ${k} AND voter = currentUser()`)).total, 0);
+  });
+
+  await test('JQL history: WAS / WAS NOT / WAS IN, CHANGED FROM TO BY AFTER, user fields', async () => {
+    const k = (await call(admin, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'History JQL' } })).body.key;
+    const tr = (await call(dev, 'GET', `/issue/${k}/transitions`)).body.transitions;
+    const toProg = tr.find((t: any) => t.to.statusCategory.key === 'in_progress');
+    await call(dev, 'POST', `/issue/${k}/transitions`, { transition: { id: toProg.id } });
+    await call(dev, 'PATCH', `/issue/${k}/fields/assignee`, { value: { accountId: '2' } });
+    await call(admin, 'PATCH', `/issue/${k}/fields/assignee`, { value: null });
+    const has = async (q: string) => (await call(dev, 'POST', '/search/jql', { jql: `key = ${k} AND ${q}` })).body.total === 1;
+    const prog = toProg.to.name;
+    assert.ok(await has(`status WAS "To Do"`), 'was, via History');
+    assert.ok(await has(`status WAS "${prog}"`), 'was, current value');
+    assert.ok(!(await has('status WAS Done')));
+    assert.ok(await has('status WAS NOT Done'));
+    assert.ok(await has(`status WAS IN (Done, "To Do")`));
+    assert.ok(await has(`status CHANGED FROM "To Do" TO "${prog}"`));
+    assert.ok(await has(`status CHANGED BY dev@tracker.test AFTER -1d`));
+    assert.ok(!(await has(`status CHANGED BY admin@tracker.test`)));
+    assert.ok(!(await has(`status CHANGED BEFORE -1d`)));
+    assert.ok(await has(`status CHANGED DURING ("2020-01-01", "2099-01-01")`));
+    assert.ok(await has('assignee WAS currentUser()'), 'held by Dana, now unassigned');
+    assert.ok(await has('assignee CHANGED FROM dev@tracker.test TO EMPTY BY admin@tracker.test'));
+    assert.ok(await has('assignee is EMPTY AND assignee WAS dev@tracker.test'));
+    assert.equal((await call(dev, 'POST', '/search/jql', { jql: 'summary WAS x' })).status, 400);
+    assert.equal((await call(dev, 'POST', '/search/jql', { jql: 'status WAS Done FROM "To Do"' })).status, 400);
+  });
+
+  await test('archiving: hidden from board/search/backlog, read-only, archived = true, restore; admins only', async () => {
+    const epic = (await call(admin, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'Old idea' } })).body.key;
+    const sub = (await call(admin, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Subtask' }, summary: 'Old sub', parent: { key: epic } } })).body.key;
+    assert.equal((await call(dev, 'POST', `/issue/${epic}/archive`)).status, 403);
+    assert.equal((await call(admin, 'POST', `/issue/${sub}/archive`)).status, 400, 'archive the parent instead');
+    const a = await call(admin, 'POST', `/issue/${epic}/archive`);
+    assert.equal(a.body.count, 2, 'subtasks go with it');
+    const jql = async (q: string) => (await call(dev, 'POST', '/search/jql', { jql: q, maxResults: 200 })).body;
+    assert.ok(!(await jql('project = DEMO')).issues.some((x: any) => [epic, sub].includes(x.key)), 'hidden from search');
+    assert.deepEqual((await jql(`project = DEMO AND archived = true`)).issues.map((x: any) => x.key).sort(), [epic, sub].sort());
+    const i = (await call(dev, 'GET', `/issue/${epic}`)).body;
+    assert.equal(i.fields.archived, true, 'still readable by key');
+    assert.equal((await call(admin, 'PATCH', `/issue/${epic}/fields/summary`, { value: 'x' })).status, 400, 'read-only');
+    assert.match((await call(dev, 'POST', `/issue/${epic}/comment`, { body: 'hi' })).body.errorMessages[0], /archived/);
+    assert.equal((await call(dev, 'POST', `/issue/${epic}/worklog`, { timeSpent: '1h' })).status, 400);
+    const board = (await call(dev, 'GET', '/project/DEMO/board')).body;
+    assert.ok(!board.columns.some((c: any) => c.issues.some((x: any) => x.key === epic)));
+    assert.equal((await call(admin, 'POST', `/issue/${epic}/restore`)).body.count, 2);
+    assert.ok((await jql('project = DEMO')).issues.some((x: any) => x.key === sub));
+    assert.ok((await call(admin, 'PATCH', `/issue/${epic}/fields/summary`, { value: 'Revived idea' })).status < 300);
+    const acts = (await call(admin, 'GET', '/admin/audit?category=spaces')).body.values.map((x: any) => x.action);
+    assert.ok(acts.includes('Archived a work item') && acts.includes('Restored a work item'));
+  });
+
+  await test('security levels: hide work from people outside the level everywhere', async () => {
+    assert.equal((await call(dev, 'POST', '/project/DEMO/security-levels', { name: 'x' })).status, 403);
+    const lvl = (await call(admin, 'POST', '/project/DEMO/security-levels', { name: 'Admins only', roles: ['admin'], includeReporter: true, includeAssignee: true })).body;
+    assert.equal(lvl.name, 'Admins only');
+    const k = (await call(admin, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'Secret plan', security: { id: lvl.id } } })).body.key;
+    assert.equal((await call(admin, 'GET', `/issue/${k}`)).body.fields.security.name, 'Admins only');
+    // Dana (member) and Vic (viewer) can't see it anywhere
+    for (const t of [dev, viewer]) {
+      assert.equal((await call(t, 'GET', `/issue/${k}`)).status, 404);
+      assert.equal((await call(t, 'POST', '/search/jql', { jql: `key = ${k}` })).body.total, 0);
+      assert.equal((await call(t, 'POST', '/search/jql', { jql: 'summary ~ "Secret plan"' })).body.total, 0);
+    }
+    const board = (await call(dev, 'GET', '/project/DEMO/board')).body;
+    assert.ok(!board.columns.some((c: any) => c.issues.some((x: any) => x.key === k)));
+    const act = (await call(dev, 'GET', '/project/DEMO/activity')).body;
+    assert.ok(!act.some((x: any) => x.issue.key === k), 'not in the activity stream');
+    assert.equal((await call(dev, 'PATCH', `/issue/${k}/fields/summary`, { value: 'x' })).status, 404);
+    // a link to it doesn't reveal it
+    await call(admin, 'POST', '/issueLink', { type: { name: 'Relates' }, outwardIssue: { key: k }, inwardIssue: { key: 'DEMO-1' } });
+    assert.ok(!(await call(dev, 'GET', '/issue/DEMO-1')).body.fields.issuelinks.some((l: any) => (l.outwardIssue ?? l.inwardIssue).key === k));
+    assert.ok((await call(admin, 'GET', '/issue/DEMO-1')).body.fields.issuelinks.some((l: any) => (l.outwardIssue ?? l.inwardIssue).key === k));
+    // mention / assign Dana: no notification leaks the summary; assigning makes it visible to her (include assignee)
+    const before = (await db.query(`SELECT count(*)::int AS n FROM notifications n JOIN issues i ON i.id = n.issue_id WHERE i.key = $1 AND n.user_id = 2`, [k]))[0].n;
+    assert.equal(before, 0);
+    await call(admin, 'PATCH', `/issue/${k}/fields/assignee`, { value: { accountId: '2' } });
+    assert.equal((await call(dev, 'GET', `/issue/${k}`)).status, 200, 'assignee can see it');
+    assert.equal((await call(viewer, 'GET', `/issue/${k}`)).status, 404);
+    // only space admins set levels; you can't pick a level you're not in
+    assert.equal((await call(dev, 'PATCH', `/issue/${k}/fields/security`, { value: null })).status, 403);
+    // clearing the level makes it visible to the space again
+    assert.ok((await call(admin, 'PATCH', `/issue/${k}/fields/security`, { value: null })).status < 300);
+    assert.equal((await call(viewer, 'GET', `/issue/${k}`)).status, 200);
+    const levels = (await call(admin, 'GET', '/project/DEMO/security-levels')).body;
+    assert.equal(levels.length, 1);
+    assert.equal((await call(admin, 'DELETE', `/security-level/${lvl.id}`)).status, 204);
+  });
+
   await test('recently viewed list', async () => {
     await call(admin, 'GET', '/issue/DEMO-2');
     const r = (await call(admin, 'GET', '/recent')).body;

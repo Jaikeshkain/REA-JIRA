@@ -6,6 +6,7 @@
  */
 import { parseDuration } from './timetracking.js';
 import { bad } from './http.js';
+import { visibleSql } from './security.js';
 
 type Tok =
   | { k: 'word'; v: string }
@@ -48,7 +49,9 @@ export type Value = { kind: 'lit'; v: string } | { kind: 'fn'; name: string; arg
 export type Node =
   | { t: 'and' | 'or'; l: Node; r: Node }
   | { t: 'not'; e: Node }
-  | { t: 'clause'; field: string; op: string; values: Value[] };
+  | { t: 'clause'; field: string; op: string; values: Value[]; preds?: Preds };
+/** History predicates for WAS / CHANGED: FROM, TO, BY, AFTER, BEFORE, ON, DURING (a, b). */
+export type Preds = Partial<Record<'from' | 'to' | 'by' | 'after' | 'before' | 'on', Value>> & { during?: [Value, Value] };
 export interface Query { where: Node | null; orderBy: { field: string; dir: 'ASC' | 'DESC' }[] }
 
 export function parse(src: string): Query {
@@ -84,6 +87,37 @@ export function parse(src: string): Query {
     const f = toks[p++];
     if (!f || (f.k !== 'word' && f.k !== 'str')) throw bad('JQL: expected a field name');
     const field = f.v.toLowerCase();
+    const list = (): Value[] => {
+      if (peek()?.k !== 'lp') throw bad('JQL: expected (');
+      p++;
+      const vs: Value[] = [];
+      while (peek() && peek().k !== 'rp') { vs.push(value()); if (peek()?.k === 'comma') p++; }
+      if (peek()?.k !== 'rp') throw bad('JQL: missing )');
+      p++;
+      return vs;
+    };
+    const preds = (): Preds => {
+      const out: Preds = {};
+      for (;;) {
+        const w = (['FROM', 'TO', 'BY', 'AFTER', 'BEFORE', 'ON', 'DURING'] as const).find((x) => isWord(x));
+        if (!w) return out;
+        p++;
+        if (w === 'DURING') {
+          const vs = list();
+          if (vs.length !== 2) throw bad('JQL: DURING takes two dates, e.g. DURING ("2026-01-01", "2026-02-01")');
+          out.during = [vs[0], vs[1]];
+        } else out[w.toLowerCase() as 'from'] = value();
+      }
+    };
+    if (isWord('WAS')) {
+      p++;
+      let op = 'was';
+      if (isWord('NOT')) { p++; op += ' not'; }
+      if (isWord('IN')) { p++; op += ' in'; }
+      const values = op.endsWith(' in') ? list() : [value()];
+      return { t: 'clause', field, op, values, preds: preds() };
+    }
+    if (isWord('CHANGED')) { p++; return { t: 'clause', field, op: 'changed', values: [], preds: preds() }; }
     let op: string;
     const t = peek();
     if (t?.k === 'op') { op = t.v; p++; }
@@ -166,6 +200,7 @@ const ORDER_COLUMNS: Record<string, string> = {
   originalestimate: 'i.original_estimate_s', timeoriginalestimate: 'i.original_estimate_s',
   remainingestimate: 'i.remaining_estimate_s', timeestimate: 'i.remaining_estimate_s',
   timespent: '(SELECT sum(wl.time_spent_s) FROM worklogs wl WHERE wl.issue_id = i.id)',
+  votes: '(SELECT count(*) FROM votes vo WHERE vo.issue_id = i.id)',
 };
 
 const CATEGORY: Record<string, string> = {
@@ -223,8 +258,41 @@ export function compile(q: Query, ctx: Ctx, params: unknown[]): { where: string;
     return v.v;
   };
 
+  let mentionsArchived = false;
+  /** WAS / CHANGED against the History (changelog) table. */
+  const history = (c: Extract<Node, { t: 'clause' }>): string => {
+    const f = c.field === 'type' ? 'issuetype' : c.field;
+    const isUser = f === 'assignee' || f === 'reporter';
+    const named: Record<string, string> = { status: 's.name', priority: 'pr.name' };
+    if (!isUser && !named[f]) throw bad(`JQL: WAS / CHANGED aren't supported for ${c.field} (use status, assignee, reporter or priority)`);
+    const pr = c.preds ?? {};
+    const cur = (v: Value) => isUser
+      ? (v.kind === 'empty' ? `i.${f}_id IS NULL` : `i.${f}_id = ${userExpr(v)}`)
+      : (v.kind === 'empty' ? 'FALSE' : `lower(${named[f]}) = lower(${P(lit(v))})`);
+    const side = (sd: 'from' | 'to', v: Value) => isUser
+      ? (v.kind === 'empty' ? `c.${sd}_value IS NULL` : `c.${sd}_value = (${userExpr(v)})::text`)
+      : (v.kind === 'empty' ? `c.${sd}_string IS NULL` : `lower(c.${sd}_string) = lower(${P(lit(v))})`);
+    const when: string[] = [];
+    if (pr.by) when.push(`c.actor_id = ${userExpr(pr.by)}`);
+    if (pr.after) when.push(`c.created_at >= ${dateExpr(pr.after)}`);
+    if (pr.before) when.push(`c.created_at <= ${dateExpr(pr.before)}`);
+    if (pr.on) { const d = dateExpr(pr.on); when.push(`c.created_at >= date_trunc('day', ${d}) AND c.created_at < date_trunc('day', ${d}) + interval '1 day'`); }
+    if (pr.during) when.push(`c.created_at BETWEEN ${dateExpr(pr.during[0])} AND ${dateExpr(pr.during[1])}`);
+    const entry = (cond: string) => `EXISTS (SELECT 1 FROM changelog c WHERE c.issue_id = i.id AND c.field = '${f}'${cond ? ` AND ${cond}` : ''}${when.length ? ` AND ${when.join(' AND ')}` : ''})`;
+    if (c.op === 'changed') {
+      const cond = [pr.from ? side('from', pr.from) : '', pr.to ? side('to', pr.to) : ''].filter(Boolean).join(' AND ');
+      return entry(cond);
+    }
+    if (pr.from || pr.to) throw bad('JQL: FROM / TO go with CHANGED, not WAS');
+    // WAS v: it has that value now (when no time window is given), or History shows it held it
+    const one = (v: Value) => `(${when.length ? '' : `${cur(v)} OR `}${entry(`(${side('from', v)} OR ${side('to', v)})`)})`;
+    const any = `(${c.values.map(one).join(' OR ')})`;
+    return c.op.includes('not') ? `NOT ${any}` : any;
+  };
+
   const clause = (c: Extract<Node, { t: 'clause' }>): string => {
     const { field, op, values } = c;
+    if (op.startsWith('was') || op === 'changed') return history(c);
     const neg = op === '!=' || op === 'not in' || op === 'is not' || op === '!~';
     const isEmpty = op === 'is' || op === 'is not';
     const many = (col: string, fn: (v: Value) => string) => {
@@ -320,6 +388,23 @@ export function compile(q: Query, ctx: Ctx, params: unknown[]): { where: string;
         const dur = (v: Value) => P(parseDuration(lit(v), { allowZero: true }));
         if (['>', '>=', '<', '<='].includes(op)) return `${col} ${op} ${dur(values[0])}`;
         return many(col, dur);
+      }
+      case 'votes': {
+        const col = '(SELECT count(*) FROM votes vo WHERE vo.issue_id = i.id)';
+        const n = (v: Value) => { const x = Number(lit(v)); if (!Number.isInteger(x) || x < 0) throw bad('JQL: votes needs a whole number'); return P(x); };
+        if (['=', '!=', '>', '>=', '<', '<='].includes(op)) return `${col} ${op} ${n(values[0])}`;
+        throw bad(`JQL: operator ${op} not supported for votes`);
+      }
+      case 'voter': {
+        if (!['=', '!=', 'in', 'not in'].includes(op)) throw bad(`JQL: operator ${op} not supported for voter`);
+        const has = `EXISTS (SELECT 1 FROM votes vo WHERE vo.issue_id = i.id AND vo.user_id IN (${values.map(userExpr).join(', ')}))`;
+        return neg ? `NOT ${has}` : has;
+      }
+      case 'archived': {
+        mentionsArchived = true;
+        if (op !== '=' && op !== '!=') throw bad('JQL: use archived = true or archived = false');
+        const want = /^(true|yes|1)$/i.test(lit(values[0])) !== (op === '!=');
+        return want ? 'i.archived_at IS NOT NULL' : 'i.archived_at IS NULL';
       }
       case 'worklogauthor': {
         if (!['=', '!=', 'in', 'not in'].includes(op)) throw bad(`JQL: operator ${op} not supported for worklogAuthor`);
@@ -453,8 +538,10 @@ export function compile(q: Query, ctx: Ctx, params: unknown[]): { where: string;
 
   const access = ctx.isSiteAdmin
     ? 'TRUE'
-    : `EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = i.project_id AND pm.user_id = ${P(ctx.userId)})`;
-  const where = `i.tenant_id = ${P(ctx.tenantId)} AND ${access}${q.where ? ` AND ${walk(q.where)}` : ''}`;
+    : `EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = i.project_id AND pm.user_id = ${P(ctx.userId)}) AND ${visibleSql(P(ctx.userId), false)}`;
+  const body = q.where ? walk(q.where) : '';
+  // archived work only appears when the query asks about it (archived = true)
+  const where = `i.tenant_id = ${P(ctx.tenantId)} AND ${access}${mentionsArchived ? '' : ' AND i.archived_at IS NULL'}${body ? ` AND ${body}` : ''}`;
 
   const order = q.orderBy.length
     ? q.orderBy

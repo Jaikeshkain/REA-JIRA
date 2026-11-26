@@ -6,6 +6,7 @@ import { FieldsEditor, WorkflowEditor } from './SettingsEditors';
 import { ImportDialog } from '../ImportDialog';
 import { AutomationEditor } from './Automation';
 import { ComponentsEditor } from './Releases';
+import { SecurityEditor } from './Security';
 import { PageHeader, useShell } from '../Layout';
 import { Avatar, Popover, PriorityIcon, StatusLozenge, TypeIcon, fmtDate, timeAgo, useAsync } from '../ui';
 
@@ -271,6 +272,7 @@ export function List() {
             </Popover>
           </span>
         )}
+        <Link className="btn subtle" to={`/issues?jql=${encodeURIComponent(`project = ${project.key} AND archived = true ORDER BY updated DESC`)}`}>Archived</Link>
         <Link className="btn subtle" to={`/issues?jql=${encodeURIComponent(jql)}`}>Open in search · bulk change</Link></div>
       {importing && <ImportDialog projectKey={project.key} onClose={() => setImporting(false)} onImported={bump} />}
       {res.error && <p className="error">{res.error.message}</p>}
@@ -366,12 +368,12 @@ export function Settings() {
       setMsg(err instanceof ApiError ? err.message : String(err));
     }
   };
-  const [tab, setTab] = useState<'access' | 'fields' | 'components' | 'workflow' | 'automation'>('access');
+  const [tab, setTab] = useState<'access' | 'fields' | 'components' | 'security' | 'workflow' | 'automation'>('access');
   const tabs = (
     <div className="tabs small" role="tablist" aria-label="Space settings">
-      {(['access', 'fields', 'components', 'workflow', 'automation'] as const).map((t) => (
+      {(['access', 'fields', 'components', 'security', 'workflow', 'automation'] as const).map((t) => (
         <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>
-          {{ access: 'Access & features', fields: 'Fields', components: 'Components', workflow: 'Workflow', automation: 'Automation' }[t]}
+          {{ access: 'Access & features', fields: 'Fields', components: 'Components', security: 'Security', workflow: 'Workflow', automation: 'Automation' }[t]}
         </button>
       ))}
     </div>
@@ -379,6 +381,7 @@ export function Settings() {
   if (tab === 'fields') return <>{tabs}<FieldsEditor project={project} /></>;
   if (tab === 'automation') return <>{tabs}<AutomationEditor project={project} /></>;
   if (tab === 'components') return <>{tabs}<ComponentsEditor project={project} /></>;
+  if (tab === 'security') return <>{tabs}<SecurityEditor project={project} /></>;
   if (tab === 'workflow') return <>{tabs}<div className="stack">{<WorkflowEditor project={project} />}</div></>;
   return (
     <>{tabs}

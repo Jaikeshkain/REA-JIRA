@@ -3,6 +3,7 @@
  * "DEMO-11 blocks DEMO-6" → outward issue DEMO-11, inward issue DEMO-6; DEMO-6 shows "is blocked by DEMO-11".
  * API shapes follow Jira REST: GET /issueLinkType, POST /issueLink, DELETE /issueLink/:id.
  */
+import { visibleSql } from './security.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import type { Db } from './db.js';
@@ -28,7 +29,7 @@ export async function linksFor(db: Db, user: AuthUser, issueId: number) {
      JOIN issue_types t ON t.id = o.type_id
      LEFT JOIN priorities pr ON pr.id = o.priority_id
      WHERE (l.outward_issue_id = $1 OR l.inward_issue_id = $1)
-       AND ($2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = o.project_id AND pm.user_id = $3))
+       AND ($2 OR (EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = o.project_id AND pm.user_id = $3) AND ${visibleSql('$3', false, 'o')}))
      ORDER BY lt.name, (l.outward_issue_id = $1) DESC, l.id`,
     [issueId, user.isSiteAdmin, user.id],
   );

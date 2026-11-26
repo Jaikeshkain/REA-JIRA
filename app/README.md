@@ -32,7 +32,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (40 checks)
+npm test           # API smoke test on an in-memory database (44 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -118,6 +118,22 @@ npm run build      # type-check server + client, production-build client
 - API: `GET|POST /api/project/:key/fields`, `PUT|DELETE /api/field/:id`; `GET /api/project/:key/workflow`,
   `POST /api/project/:key/statuses`, `PUT|DELETE /api/status/:id[?moveTo=]`, `POST /api/project/:key/transitions`,
   `PUT|DELETE /api/transition/:id`; `customfield_<id>` keys on create and `PATCH /api/issue/:key/fields/customfield_<id>`.
+
+## Phase 5 (part 4): votes, JQL history, archiving, security levels
+
+- **Votes:** △ Vote on the work item page. One vote per person; not on work you reported or on resolved work.
+  Voter names need the Viewer role or higher. JQL `votes >= 3`, `voter = currentUser()`, `ORDER BY votes DESC`.
+- **JQL history** (from each work item's History): `status WAS "In Progress"`, `WAS NOT`, `WAS IN (…)`,
+  `assignee WAS currentUser()`, and `CHANGED` with `FROM`, `TO`, `BY`, `AFTER`, `BEFORE`, `ON`, `DURING (a, b)`, e.g.
+  `status CHANGED FROM "To Do" TO "In Progress" BY dev@tracker.test AFTER -7d`. Works for status, assignee, reporter
+  and priority.
+- **Archiving** (space admins, work item ⋯ → Archive): archived work and its subtasks disappear from boards, backlogs,
+  lists, search, dashboards and counts; it stays readable by key, can't be edited, commented on or logged against, and
+  `archived = true` finds it (List view → **Archived**). Restore brings it back. Both are in the audit log.
+- **Security levels** (Space settings → Security): each level says which roles and people can see work set to it, plus
+  optionally the reporter and assignee. Space admins set a work item's level (only to a level they're in). Everyone
+  else gets "not found": the work item, search, filters, dashboards, CSV, board, backlog, summary counts, activity,
+  links, recent items and notifications all leave it out. Site admins see everything.
 
 ## Phase 5 (part 3): time tracking and WIP limits
 
