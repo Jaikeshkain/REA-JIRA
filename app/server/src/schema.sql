@@ -415,3 +415,56 @@ CREATE TABLE IF NOT EXISTS sso_handoffs (
   next        TEXT NOT NULL DEFAULT '/',
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ---------------------------------------------------------------- Phase 5: API tokens, webhooks, audit log
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id            SERIAL PRIMARY KEY,
+  user_id       INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  token_hash    TEXT NOT NULL UNIQUE,
+  prefix        TEXT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_used_at  TIMESTAMPTZ,
+  expires_at    TIMESTAMPTZ,
+  revoked_at    TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS webhooks (
+  id          SERIAL PRIMARY KEY,
+  tenant_id   INT NOT NULL REFERENCES tenants(id),
+  name        TEXT NOT NULL,
+  url         TEXT NOT NULL,
+  events      TEXT[] NOT NULL,
+  project_id  INT REFERENCES projects(id) ON DELETE CASCADE,
+  enabled     BOOLEAN NOT NULL DEFAULT true,
+  secret      TEXT NOT NULL,
+  created_by  INT REFERENCES users(id) ON DELETE SET NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id              SERIAL PRIMARY KEY,
+  webhook_id      INT NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+  event           TEXT NOT NULL,
+  payload         JSONB NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','sending','success','failed')),
+  attempts        INT NOT NULL DEFAULT 0,
+  next_try_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  claimed_at      TIMESTAMPTZ,
+  response_status INT,
+  response_text   TEXT,
+  error           TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  delivered_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS webhook_deliveries_due ON webhook_deliveries (status, next_try_at);
+CREATE TABLE IF NOT EXISTS audit_log (
+  id          SERIAL PRIMARY KEY,
+  tenant_id   INT NOT NULL REFERENCES tenants(id),
+  actor_id    INT REFERENCES users(id) ON DELETE SET NULL,
+  actor_name  TEXT,
+  category    TEXT NOT NULL,
+  action      TEXT NOT NULL,
+  target      TEXT,
+  ip          TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS audit_log_tenant ON audit_log (tenant_id, id DESC);

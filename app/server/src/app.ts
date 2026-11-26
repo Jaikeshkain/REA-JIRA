@@ -19,6 +19,8 @@ import { bulkRoutes } from './bulk.js';
 import { Hub, changeTracker, setHub } from './realtime.js';
 import { schedulerRoutes } from './scheduler.js';
 import { oidcConfigFromEnv, oidcRoutes, type OidcConfig } from './oidc.js';
+import { auditRoutes, auditTrail } from './audit.js';
+import { webhookRoutes } from './webhooks.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -43,6 +45,7 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string; oidc?: OidcCon
     '/api',
     authMiddleware(db),
     changeTracker(db, hub),
+    auditTrail(db),
     projectRoutes(db),
     issueRoutes(db, store),
     sprintRoutes(db),
@@ -56,6 +59,8 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string; oidc?: OidcCon
     automationRoutes(db),
     bulkRoutes(db, store),
     schedulerRoutes(db),
+    auditRoutes(db),
+    webhookRoutes(db),
   );
   app.use('/api', (_req, res) => {
     res.status(404).json({ errorMessages: ['Not found'] });

@@ -104,7 +104,12 @@ export type EmailPref = 'immediate' | 'digest' | 'off';
 export interface Preferences { emailNotifications: EmailPref; emailMode: 'smtp' | 'outbox'; digestHourUtc: number }
 export interface FilterSubscription { id: string; filterId: string; frequency: 'daily' | 'weekly'; hourUtc: number; weekday: number | null; emailWhenEmpty: boolean; nextRun: string; lastRun: string | null }
 export interface OutboxEmail { id: string; to: string; kind: string; subject: string; status: 'queued' | 'sent' | 'outbox' | 'failed'; attempts: number; error: string | null; created: string; sent: string | null; text: string; html: string }
-export type TickResult = { skipped: true } | { notifications: number; subscriptions: number; rules: { rules: number; items: number }; delivery: { sent: number; failed: number } };
+export type TickResult = { skipped: true } | { notifications: number; subscriptions: number; rules: { rules: number; items: number }; delivery: { sent: number; failed: number }; webhooks?: { sent: number; failed: number } };
+export interface ApiToken { id: string; name: string; hint: string; created: string; lastUsed: string | null; expires: string | null }
+export type WebhookEventName = 'issue_created' | 'issue_updated' | 'issue_deleted' | 'comment_created';
+export interface Webhook { id: string; name: string; url: string; events: WebhookEventName[]; enabled: boolean; project: { key: string } | null; created: string; secretHint: string; stats?: { success: number; failed: number; pending: number; last: string | null } }
+export interface WebhookDelivery { id: string; event: string; status: 'queued' | 'sending' | 'success' | 'failed'; attempts: number; responseStatus: number | null; error: string | null; created: string; delivered: string | null; nextTry: string | null; issueKey: string | null }
+export interface AuditEntry { id: string; created: string; category: string; action: string; target: string | null; ip: string | null; actor: { accountId: string; displayName: string } | null }
 export interface AutomationRun {
   id: string; status: 'success' | 'no_action' | 'error'; message: string; actions: string[]; created: string;
   rule: { id: string; name: string }; issue: { key: string; summary: string } | null; initiator: User | null;
@@ -259,6 +264,17 @@ export const api = {
   unsubscribe: (id: string) => call('DELETE', `/subscription/${id}`),
   outbox: () => call<{ mode: 'smtp' | 'outbox'; emails: OutboxEmail[] }>('GET', '/admin/emails'),
   runScheduler: () => call<TickResult>('POST', '/admin/scheduler/run'),
+  tokens: () => call<ApiToken[]>('GET', '/myself/tokens'),
+  createToken: (name: string, expiresInDays: 30 | 90 | 365 | null) => call<ApiToken & { token: string }>('POST', '/myself/tokens', { name, expiresInDays }),
+  revokeToken: (id: string) => call('DELETE', `/myself/tokens/${id}`),
+  webhooks: () => call<{ events: WebhookEventName[]; webhooks: Webhook[] }>('GET', '/webhooks'),
+  createWebhook: (body: { name: string; url: string; events: WebhookEventName[]; projectKey: string | null; enabled: boolean }) => call<Webhook & { secret: string }>('POST', '/webhooks', body),
+  updateWebhook: (id: string, body: Partial<{ name: string; url: string; events: WebhookEventName[]; projectKey: string | null; enabled: boolean }>) => call<Webhook>('PUT', `/webhook/${id}`, body),
+  deleteWebhook: (id: string) => call('DELETE', `/webhook/${id}`),
+  rotateWebhookSecret: (id: string) => call<{ secret: string }>('POST', `/webhook/${id}/secret`),
+  testWebhook: (id: string) => call<{ ok: boolean; status: string; responseStatus: number | null; error: string | null }>('POST', `/webhook/${id}/test`),
+  webhookDeliveries: (id: string) => call<WebhookDelivery[]>('GET', `/webhook/${id}/deliveries`),
+  audit: (q: { category?: string; startAt?: number }) => call<{ total: number; startAt: number; values: AuditEntry[] }>('GET', `/admin/audit?${new URLSearchParams(Object.entries(q).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]))}`),
   rules: (key: string) => call<AutomationRule[]>('GET', `/project/${key}/automation`),
   createRule: (key: string, body: { name: string; enabled?: boolean; trigger: AutoTrigger; condition?: string | null; actions: AutoAction[] }) =>
     call<AutomationRule>('POST', `/project/${key}/automation`, body),

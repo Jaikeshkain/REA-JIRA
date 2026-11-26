@@ -15,6 +15,7 @@ import { Timeline } from './pages/Timeline';
 import { Filters } from './pages/Filters';
 import { DashboardList, DashboardView } from './pages/Dashboards';
 import { NotificationSettings, Outbox } from './pages/Email';
+import { ApiTokens, AuditLog, Webhooks } from './pages/Admin';
 
 function App() {
   const { user, ready } = useAuth();
@@ -44,6 +45,10 @@ function App() {
         <Route path="/dashboards/:id" element={<DashboardView />} />
         <Route path="/settings/notifications" element={<NotificationSettings />} />
         <Route path="/admin/outbox" element={<Outbox />} />
+        <Route path="/admin" element={<Navigate to="/admin/audit" replace />} />
+        <Route path="/admin/audit" element={<AuditLog />} />
+        <Route path="/admin/webhooks" element={<Webhooks />} />
+        <Route path="/settings/tokens" element={<ApiTokens />} />
         <Route path="*" element={<div className="page"><h1>Page not found</h1></div>} />
       </Route>
     </Routes>

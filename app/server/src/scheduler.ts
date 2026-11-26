@@ -18,6 +18,7 @@ import { jqlCtx } from './customfields.js';
 import { loadFilter } from './filters.js';
 import { APP_URL, deliver, esc, frame, mailMode, queueEmail } from './mail.js';
 import { runScheduledRule } from './automation.js';
+import { deliverWebhooks } from './webhooks.js';
 
 const DIGEST_HOUR_UTC = Number(process.env.DIGEST_HOUR_UTC || 8);
 const BATCH_WINDOW_MS = 60_000;
@@ -160,7 +161,8 @@ export async function tick(db: Db, now = new Date()) {
       const subscriptions = await filterSubscriptions(db, now);
       const rules = await scheduledRules(db, now);
       const delivery = await deliver(db, now);
-      return { notifications, subscriptions, rules, delivery };
+      const webhooks = await deliverWebhooks(db, now);
+      return { notifications, subscriptions, rules, delivery, webhooks };
     };
     if (!db.withLock) return await pass();
     const r = await db.withLock(SCHEDULER_LOCK, pass);

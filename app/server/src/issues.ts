@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { emitWebhook, issueSnapshot } from './webhooks.js';
 import { z } from 'zod';
 import type { Db } from './db.js';
 import type { AuthUser } from './auth.js';
@@ -78,6 +79,10 @@ export async function loadIssue(db: Db, user: AuthUser, key: string) {
   return { row, role };
 }
 
+/** Latest History entry id for a work item (webhooks report only entries written after it). */
+const lastChangeId = async (db: Db, issueId: number) =>
+  Number((await db.query(`SELECT coalesce(max(id), 0) AS m FROM changelog WHERE issue_id = $1`, [issueId]))[0].m);
+
 async function logChange(
   q: Db, issueId: number, actorId: number, field: string,
   from: { v?: unknown; s?: unknown }, to: { v?: unknown; s?: unknown },
@@ -124,6 +129,7 @@ const CreateIssue = z.object({
 const FieldEdit = z.object({ operation: z.enum(['SET', 'ADD', 'REMOVE']).default('SET'), value: z.any() });
 
 // ------------------------------------------------------------------ operations (shared by routes, bulk change, import)
+// Each fires automation and webhooks after its transaction commits.
 
 /** Create a work item (whole field map, Jira create semantics). Fires automation after commit. */
 export async function createIssue(db: Db, user: AuthUser, input: unknown): Promise<{ id: number; key: string }> {
@@ -236,6 +242,7 @@ export async function createIssue(db: Db, user: AuthUser, input: unknown): Promi
     return { id: row.id, key };
   });
   await fireAutomation(db, { type: 'issue_created', issueId: created.id, actorId: user.id });
+  await emitWebhook(db, 'issue_created', user, { issueId: created.id });
   return created;
 }
 
@@ -246,6 +253,7 @@ export async function editField(db: Db, user: AuthUser, key: string, fieldId: st
   const field = fieldId.toLowerCase();
   const need = field === 'assignee' ? 'ASSIGN_ISSUES' : field === 'reporter' ? 'MODIFY_REPORTER' : 'EDIT_ISSUES';
   if (!can(role, need as any, user.isSiteAdmin)) throw forbidden(need);
+  const afterId = await lastChangeId(db, row.id);
 
   await db.tx(async (q) => {
     const set = async (col: string, v: unknown, from: { v?: unknown; s?: unknown }, to: { v?: unknown; s?: unknown }) => {
@@ -352,16 +360,19 @@ export async function editField(db: Db, user: AuthUser, key: string, fieldId: st
     }
   });
   await fireAutomation(db, { type: 'field_changed', issueId: row.id, actorId: user.id, field });
+  await emitWebhook(db, 'issue_updated', user, { issueId: row.id, changelog: { field, afterId } });
 }
 
 /** Move a work item by transition id (conditions + validators apply). Fires automation after commit. */
 export async function transitionIssue(db: Db, user: AuthUser, key: string, transitionId: number) {
   const { row, role } = await loadIssue(db, user, key);
   if (!can(role, 'TRANSITION_ISSUES', user.isSiteAdmin)) throw forbidden('TRANSITION_ISSUES');
+  const afterId = await lastChangeId(db, row.id);
   await db.tx((q) => applyTransition(q, user, role, row, transitionId));
   const [now] = await db.query(`SELECT status_id FROM issues WHERE id = $1`, [row.id]);
   if (now && now.status_id !== row.status_id) {
     await fireAutomation(db, { type: 'issue_transitioned', issueId: row.id, actorId: user.id, fromStatusId: row.status_id, toStatusId: now.status_id });
+    await emitWebhook(db, 'issue_updated', user, { issueId: row.id, changelog: { field: 'status', afterId } });
   }
 }
 
@@ -381,6 +392,7 @@ export async function deleteIssue(db: Db, user: AuthUser, store: FileStore, key:
   if (!can(role, 'DELETE_ISSUES', user.isSiteAdmin)) throw forbidden('DELETE_ISSUES');
   const [{ n }] = await db.query(`SELECT count(*)::int AS n FROM issues WHERE parent_id = $1`, [row.id]);
   if (n > 0 && !deleteSubtasks) throw bad(`${row.key} has ${n} child issue(s); pass deleteSubtasks=true`);
+  const snapshot = await issueSnapshot(db, row.id); // for the webhook: the row is about to go
   const files = await db.tx(async (q) => {
     const keys = (
       await q.query(`SELECT storage_key FROM attachments WHERE issue_id IN (SELECT id FROM issues WHERE id = $1 OR parent_id = $1)`, [row.id])
@@ -390,6 +402,7 @@ export async function deleteIssue(db: Db, user: AuthUser, store: FileStore, key:
     return keys;
   });
   await store.remove(files); // after commit: rows are gone, so the bytes can go too
+  if (snapshot) await emitWebhook(db, 'issue_deleted', user, { snapshot });
 }
 
 // ------------------------------------------------------------------ routes
@@ -580,6 +593,7 @@ export function issueRoutes(db: Db, store: FileStore) {
       });
       res.status(201);
       await fireAutomation(db, { type: 'comment_added', issueId: row.id, actorId: user.id });
+      await emitWebhook(db, 'comment_created', user, { issueId: row.id, comment: { id: String(c.id), text: adfToText(doc) } });
       return commentJson({ ...c, display_name: user.displayName, email: user.email, avatar_color: user.avatarColor });
     }),
   );

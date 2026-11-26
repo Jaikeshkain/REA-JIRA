@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { Db } from './db.js';
 import { HttpError, h, bad } from './http.js';
 import { ssoOnly } from './oidc.js';
+import { audit, userForToken, TOKEN_PREFIX } from './audit.js';
 
 export interface AuthUser {
   id: number;
@@ -18,6 +19,8 @@ export interface AuthUser {
 declare module 'express-serve-static-core' {
   interface Request {
     user?: AuthUser;
+    /** 'session' = signed in to the app; 'token' = personal API token */
+    authKind?: 'session' | 'token';
   }
 }
 
@@ -73,8 +76,23 @@ export function authMiddleware(db: Db) {
   return async (req: Request, _res: Response, next: NextFunction) => {
     const header = req.header('authorization') ?? '';
     const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-    if (!token) return next(new HttpError(401, 'Not signed in'));
+    const basic = /^Basic (.+)$/i.exec(header);
     try {
+      // API tokens: "Bearer trk_…" or Jira-style Basic "email:trk_…"
+      if (basic || token?.startsWith(TOKEN_PREFIX)) {
+        let email: string | undefined, secret = token ?? '';
+        if (basic) {
+          const raw = Buffer.from(basic[1], 'base64').toString('utf8');
+          const i = raw.indexOf(':');
+          email = raw.slice(0, i); secret = raw.slice(i + 1);
+        }
+        const row = await userForToken(db, secret, email);
+        if (!row) return next(new HttpError(401, 'Invalid, expired or revoked API token'));
+        req.user = rowToUser(row);
+        req.authKind = 'token';
+        return next();
+      }
+      if (!token) return next(new HttpError(401, 'Not signed in'));
       const [row] = await db.query(
         `SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
          WHERE s.token = $1 AND s.expires_at > now() AND u.active`,
@@ -82,6 +100,7 @@ export function authMiddleware(db: Db) {
       );
       if (!row) return next(new HttpError(401, 'Session expired'));
       req.user = rowToUser(row);
+      req.authKind = 'session';
       next();
     } catch (e) {
       next(e);
@@ -131,10 +150,12 @@ export function authRoutes(db: Db) {
       // SSO-only accounts have no bcrypt hash; treat them like a wrong password (no account enumeration)
       const usable = row && typeof row.password_hash === 'string' && row.password_hash.startsWith('$2');
       if (!usable || !(await bcrypt.compare(body.password, row.password_hash))) {
+        if (row) await audit(db, { tenantId: row.tenant_id, actorId: row.id, actorName: row.display_name, category: 'sign-in', action: 'Failed password sign-in', target: row.email, ip: req.ip });
         throw new HttpError(401, 'Incorrect email or password');
       }
       if (ssoOnly() && !row.is_site_admin) throw new HttpError(403, 'This site uses single sign-on. Sign in with SSO instead.');
       const token = await createSession(db, row.id);
+      await audit(db, { tenantId: row.tenant_id, actorId: row.id, actorName: row.display_name, category: 'sign-in', action: 'Signed in with password', target: row.email, ip: req.ip });
       return { token, user: userJson(rowToUser(row)) };
     }),
   );

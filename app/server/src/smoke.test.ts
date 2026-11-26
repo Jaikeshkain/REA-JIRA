@@ -1114,6 +1114,149 @@ try {
     assert.equal((await db.query(`SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory'`))[0].n, 0, 'scheduler lock released');
   });
 
+  await test('API tokens: create once, Bearer + Basic auth, scoped like the user, revoke, expiry', async () => {
+    const created = await call(dev, 'POST', '/myself/tokens', { name: 'CI script', expiresInDays: 30 });
+    assert.equal(created.status, 201);
+    const tok = created.body.token as string;
+    assert.match(tok, /^trk_[A-Za-z0-9_-]{40,}$/);
+    const list = (await call(dev, 'GET', '/myself/tokens')).body;
+    assert.ok(list.some((t: any) => t.name === 'CI script' && !('token' in t)), 'token never listed again');
+    assert.equal((await db.query(`SELECT count(*)::int AS n FROM api_tokens WHERE token_hash = $1`, [tok]))[0].n, 0, 'only a hash is stored');
+
+    assert.equal((await call(tok, 'GET', '/myself')).body.displayName, 'Dana Dev', 'Bearer token works');
+    const basic = (email: string, t: string) => fetch(`${base}/myself`, { headers: { authorization: `Basic ${Buffer.from(`${email}:${t}`).toString('base64')}` } });
+    assert.equal((await basic('dev@tracker.test', tok)).status, 200, 'Basic email:token works (Jira-style)');
+    assert.equal((await basic('admin@tracker.test', tok)).status, 401, 'email must match the token owner');
+    assert.equal((await call(tok, 'GET', '/admin/audit')).status, 403, 'a token has the owner’s permissions, no more');
+    assert.equal((await call(tok, 'POST', '/myself/tokens', { name: 'chain' })).status, 403, 'tokens can’t mint tokens');
+    assert.equal((await call('trk_' + 'x'.repeat(43), 'GET', '/myself')).status, 401);
+
+    await db.query(`UPDATE api_tokens SET expires_at = now() - interval '1 minute' WHERE name = 'CI script'`);
+    assert.equal((await call(tok, 'GET', '/myself')).status, 401, 'expired');
+    await db.query(`UPDATE api_tokens SET expires_at = now() + interval '1 day' WHERE name = 'CI script'`);
+    const id = list.find((t: any) => t.name === 'CI script').id;
+    assert.equal((await call(viewer, 'DELETE', `/myself/tokens/${id}`)).status, 404, 'only your own');
+    assert.equal((await call(dev, 'DELETE', `/myself/tokens/${id}`)).status, 204);
+    assert.equal((await call(tok, 'GET', '/myself')).status, 401, 'revoked');
+  });
+
+  await test('audit log: config changes, tokens and sign-ins recorded; site admins only', async () => {
+    await call(admin, 'POST', '/project/DEMO/fields', { name: 'Audit me', type: 'text' });
+    await call(null, 'POST', '/auth/login', { email: 'dev@tracker.test', password: 'wrong-password' });
+    const log = await call(admin, 'GET', '/admin/audit?maxResults=200');
+    assert.equal(log.status, 200);
+    const acts = log.body.values.map((a: any) => `${a.category}|${a.action}|${a.target ?? ''}`);
+    assert.ok(acts.some((a: string) => a.startsWith('fields|Changed custom fields') && a.endsWith('|DEMO')), acts.slice(0, 8).join('\n'));
+    assert.ok(acts.includes('security|Created an API token|CI script'));
+    assert.ok(acts.includes('security|Revoked an API token|CI script'));
+    assert.ok(acts.includes('sign-in|Failed password sign-in|dev@tracker.test'));
+    assert.ok(acts.some((a: string) => a.startsWith('sign-in|Signed in with password')));
+    const only = (await call(admin, 'GET', '/admin/audit?category=security')).body.values;
+    assert.ok(only.length >= 2 && only.every((a: any) => a.category === 'security'));
+    assert.equal((await call(dev, 'GET', '/admin/audit')).status, 403);
+    // nothing sensitive is stored
+    assert.equal((await db.query(`SELECT count(*)::int AS n FROM audit_log WHERE action ILIKE '%password%' AND action NOT IN ('Failed password sign-in','Signed in with password')`))[0].n, 0);
+  });
+
+  await test('webhooks: signed JSON on issue events, retries with backoff, test ping, private targets refused', async () => {
+    const { createServer } = await import('node:http');
+    const { createHmac } = await import('node:crypto');
+    const got: { headers: Record<string, any>; body: string }[] = [];
+    let reply = 200;
+    const recv = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => { got.push({ headers: req.headers, body }); res.writeHead(reply).end('ok'); });
+    }).listen(0, '127.0.0.1');
+    await new Promise((r) => recv.once('listening', r));
+    const hookUrl = `http://127.0.0.1:${(recv.address() as AddressInfo).port}/hook`;
+    const wait = async (n: number, ms = 3000) => { const t0 = Date.now(); while (got.length < n && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 25)); };
+    try {
+      // private/loopback targets are refused unless explicitly allowed
+      assert.equal((await call(admin, 'POST', '/webhooks', { name: 'x', url: hookUrl, events: ['issue_created'] })).status, 400);
+      assert.equal((await call(admin, 'POST', '/webhooks', { name: 'x', url: 'ftp://example.com/', events: ['issue_created'] })).status, 400);
+      assert.equal((await call(admin, 'POST', '/webhooks', { name: 'x', url: 'http://169.254.169.254/latest', events: ['issue_created'] })).status, 400);
+      assert.equal((await call(dev, 'GET', '/webhooks')).status, 403, 'site admins only');
+      process.env.WEBHOOK_ALLOW_PRIVATE = '1';
+      const w = await call(admin, 'POST', '/webhooks', { name: 'CI', url: hookUrl, events: ['issue_created', 'issue_updated', 'comment_created', 'issue_deleted'], projectKey: 'DEMO' });
+      assert.equal(w.status, 201);
+      const secret = w.body.secret as string;
+      assert.match(secret, /^whsec_/);
+      assert.ok(!('secret' in (await call(admin, 'GET', '/webhooks')).body.webhooks[0]), 'secret not listed again');
+
+      const k = (await call(dev, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'Hooked' } })).body.key;
+      await wait(1);
+      assert.equal(got.length, 1);
+      const first = got[0];
+      const p = JSON.parse(first.body);
+      assert.equal(p.webhookEvent, 'jira:issue_created');
+      assert.equal(p.issue.key, k);
+      assert.equal(p.issue.fields.summary, 'Hooked');
+      assert.equal(p.user.displayName, 'Dana Dev');
+      assert.equal(first.headers['x-tracker-event'], 'issue_created');
+      const [, t, v1] = /^t=(\d+),v1=([0-9a-f]{64})$/.exec(first.headers['x-tracker-signature'])!;
+      assert.equal(v1, createHmac('sha256', secret).update(`${t}.${first.body}`).digest('hex'), 'valid HMAC signature');
+      assert.ok(Math.abs(Date.now() / 1000 - Number(t)) < 60);
+
+      await call(dev, 'PATCH', `/issue/${k}/fields/summary`, { value: 'Hooked (renamed)' });
+      await call(dev, 'PATCH', `/issue/${k}/fields/summary`, { value: 'Hooked (renamed)' }); // no-op: no event
+      await call(dev, 'POST', `/issue/${k}/comment`, { body: 'webhook comment' });
+      await wait(3);
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(got.length, 3, got.map((g) => JSON.parse(g.body).event).join());
+      const upd = JSON.parse(got[1].body);
+      assert.deepEqual(upd.changelog.items, [{ field: 'summary', fromString: 'Hooked', toString: 'Hooked (renamed)' }]);
+      assert.equal(JSON.parse(got[2].body).comment.body, 'webhook comment');
+
+      // receiver down → retried with backoff by the scheduler, then succeeds
+      reply = 500;
+      assert.equal((await call(admin, 'DELETE', `/issue/${k}`)).status, 204);
+      await wait(4);
+      let failed: any;
+      for (let i = 0; i < 80; i++) { // the receiver can see the request before the result is stored
+        [failed] = await db.query(`SELECT * FROM webhook_deliveries WHERE event = 'issue_deleted' ORDER BY id DESC LIMIT 1`);
+        if (failed?.status !== 'sending') break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      assert.equal(failed.status, 'queued');
+      assert.equal(failed.attempts, 1);
+      assert.equal(failed.error, 'HTTP 500');
+      assert.equal(JSON.parse(got[3].body).issue.key, k, 'delete payload has the gone item');
+      reply = 200;
+      await tick(db, new Date(Date.now() + 30_000));
+      assert.equal(got.length, 4, 'not before the backoff');
+      await tick(db, new Date(Date.now() + 90_000));
+      assert.equal(got.length, 5, 'retried');
+      assert.equal(got[4].headers['x-tracker-delivery'], String(failed.id), 'same delivery id → receivers can de-duplicate');
+      assert.equal((await db.query(`SELECT status FROM webhook_deliveries WHERE id = $1`, [failed.id]))[0].status, 'success');
+
+      // other spaces don't trigger a space-scoped hook; test ping; deliveries list; disable
+      const ping = await call(admin, 'POST', `/webhook/${w.body.id}/test`);
+      assert.equal(ping.body.ok, true);
+      assert.equal(JSON.parse(got.at(-1)!.body).event, 'ping');
+      const dl = (await call(admin, 'GET', `/webhook/${w.body.id}/deliveries`)).body;
+      assert.ok(dl.length === 5 && dl.every((d: any) => d.status === 'success'), JSON.stringify(dl.map((d: any) => [d.event, d.status, d.error])));
+      await call(admin, 'PUT', `/webhook/${w.body.id}`, { enabled: false });
+      const n = got.length;
+      await call(dev, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'Not hooked' } });
+      await new Promise((r) => setTimeout(r, 400));
+      assert.equal(got.length, n, 'disabled hook sends nothing');
+      // even an allowed hook can't reach private addresses once the switch is off (checked at connect time)
+      await call(admin, 'PUT', `/webhook/${w.body.id}`, { enabled: true });
+      delete process.env.WEBHOOK_ALLOW_PRIVATE;
+      const blocked = await call(admin, 'POST', `/webhook/${w.body.id}/test`);
+      assert.equal(blocked.body.ok, false);
+      assert.match(blocked.body.error, /private address/);
+      assert.equal(got.length, n);
+      const acts = (await call(admin, 'GET', '/admin/audit?category=webhooks')).body.values.map((a: any) => a.action);
+      assert.ok(acts.includes('Created a webhook') && acts.includes('Turned off a webhook'));
+      assert.equal((await call(admin, 'DELETE', `/webhook/${w.body.id}`)).status, 204);
+    } finally {
+      delete process.env.WEBHOOK_ALLOW_PRIVATE;
+      recv.close();
+    }
+  });
+
   await test('recently viewed list', async () => {
     await call(admin, 'GET', '/issue/DEMO-2');
     const r = (await call(admin, 'GET', '/recent')).body;

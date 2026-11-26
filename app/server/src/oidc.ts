@@ -21,6 +21,7 @@ import type { Db } from './db.js';
 import { createSession, userJson } from './auth.js';
 import { HttpError, h } from './http.js';
 import { APP_URL } from './mail.js';
+import { audit } from './audit.js';
 
 export interface OidcConfig {
   issuer: string;
@@ -243,6 +244,7 @@ export function oidcRoutes(db: Db, cfg: OidcConfig | null) {
     const [u] = await db.query(`SELECT * FROM users WHERE id = $1 AND active`, [row.user_id]);
     if (!u) throw new HttpError(401, 'Your account is deactivated.');
     const token = await createSession(db, u.id);
+    await audit(db, { tenantId: u.tenant_id, actorId: u.id, actorName: u.display_name, category: 'sign-in', action: 'Signed in with SSO', target: u.email, ip: req.ip });
     return {
       token, next: row.next,
       user: userJson({ id: u.id, tenantId: u.tenant_id, email: u.email, displayName: u.display_name, avatarColor: u.avatar_color, isSiteAdmin: u.is_site_admin }),

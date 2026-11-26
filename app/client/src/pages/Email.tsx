@@ -4,6 +4,7 @@ import { api, ApiError, type EmailPref, type FilterSubscription, type OutboxEmai
 import { useAuth } from '../auth';
 import { PageHeader, useShell } from '../Layout';
 import { timeAgo } from '../ui';
+import { AdminTabs } from './Admin';
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const hour = (h: number) => `${String(h).padStart(2, '0')}:00 UTC`;
@@ -143,7 +144,8 @@ export function Outbox() {
   };
   return (
     <div className="page">
-      <PageHeader title="Email outbox" actions={<button className="btn" onClick={run} disabled={busy}>{busy ? 'Running…' : 'Run scheduler now'}</button>} />
+      <PageHeader title="Administration" actions={<button className="btn" onClick={run} disabled={busy}>{busy ? 'Running…' : 'Run scheduler now'}</button>} />
+      <AdminTabs />
       {data && (
         <p className="muted small">
           {data.mode === 'outbox'
@@ -153,7 +155,7 @@ export function Outbox() {
         </p>
       )}
       {!data ? <p className="muted">Loading…</p> : data.emails.length === 0 ? <p className="muted">No emails yet.</p> : (
-        <table className="table">
+        <div className="table-wrap"><table className="table">
           <thead><tr><th>To</th><th>Subject</th><th>Kind</th><th>Status</th><th>Queued</th></tr></thead>
           <tbody>
             {data.emails.map((m) => (
@@ -166,7 +168,7 @@ export function Outbox() {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
       {open && (
         <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && setOpen(null)}>

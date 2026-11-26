@@ -32,7 +32,7 @@ Reset the demo data by stopping the server and deleting `server/data/`.
 ## Test
 
 ```powershell
-npm test           # API smoke test on an in-memory database (33 checks)
+npm test           # API smoke test on an in-memory database (36 checks)
 npm run build      # type-check server + client, production-build client
 ```
 
@@ -118,6 +118,23 @@ npm run build      # type-check server + client, production-build client
 - API: `GET|POST /api/project/:key/fields`, `PUT|DELETE /api/field/:id`; `GET /api/project/:key/workflow`,
   `POST /api/project/:key/statuses`, `PUT|DELETE /api/status/:id[?moveTo=]`, `POST /api/project/:key/transitions`,
   `PUT|DELETE /api/transition/:id`; `customfield_<id>` keys on create and `PATCH /api/issue/:key/fields/customfield_<id>`.
+
+## Phase 5 (part 1): API tokens, webhooks, audit log
+
+- **API tokens** (Account → API tokens): let scripts and other tools use the REST API as you, with
+  `Authorization: Bearer trk_…` or Jira-style Basic auth (`email:token`). A token has exactly your permissions, is
+  shown once (only a hash is stored), can expire (30/90/365 days or never) and can be revoked. Tokens can't create
+  more tokens. Up to 20 per person.
+- **Webhooks** (Administration → Webhooks, site admins): Tracker POSTs Jira-shaped JSON (`webhookEvent`, `issue`,
+  `changelog`, `comment`, `user`) when work items are created, updated or deleted, or comments are added — for all
+  spaces or one. Each request is signed: `X-Tracker-Signature: t=<unix>,v1=<HMAC-SHA256(secret, "<t>.<body>")>`;
+  `X-Tracker-Delivery` is stable across retries so receivers can de-duplicate. Failed deliveries are retried with
+  backoff (1, 2, 4 … 32 minutes; 7 attempts), visible per webhook with a **Send test** button.
+  Webhooks can't target private or local addresses (checked on the resolved IP at connect time); set
+  `WEBHOOK_ALLOW_PRIVATE=1` in `.env` to allow them, e.g. for an internal receiver.
+- **Audit log** (Administration → Audit log, site admins): who changed spaces, members and roles, workflows, fields,
+  automation, webhooks and API tokens, plus password and SSO sign-ins (successful and failed), with time and IP.
+  Request bodies are never stored.
 
 ## Phase 4 (part 7): running several server instances
 

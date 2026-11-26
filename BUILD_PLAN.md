@@ -101,3 +101,11 @@ reconnect + browser resync), scheduler passes under an advisory lock. Verified a
 
 ## Phase 4 — complete
 All planned Phase 4 items are built.
+
+## Phase 5 — part 1 done: API tokens, webhooks, audit log
+Personal API tokens (Bearer/Basic, hashed, expiry, revoke), signed webhooks with retries and SSRF protection,
+admin audit log for configuration, security and sign-in events.
+
+## Phase 5 — candidates
+Releases (versions) and components, time tracking (worklogs), votes, WIP limits on board columns, JQL history
+operators (`was`, `changed`), archiving work items, issue-level security.
