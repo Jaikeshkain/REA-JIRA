@@ -1,7 +1,9 @@
 node_modules
 **/node_modules
 server/data
-client
+# the web app isn't needed, but its package.json is (it's an npm workspace)
+client/*
+!client/package.json
 release
 licensing
 customer-kit
