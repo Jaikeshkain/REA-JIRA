@@ -1,0 +1,5 @@
+{
+  "extends": "../server/tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["src", "../server/src/license.ts", "../server/src/license-key.ts"]
+}

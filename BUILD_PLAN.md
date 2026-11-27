@@ -127,6 +127,12 @@ Password reset, email verification, invitations, change password, rate limits, i
 serving with security headers. Site settings: sign-up open / domains / invitation only; space creation everyone /
 site admins.
 
+## Self-hosted licensing done
+Ed25519-signed monthly keys checked offline (installation binding, seats, trial, warning, grace, read-only), clock
+protection (multi-clock max, high-water mark, running-time counter per key), vendor key tool, protected release build
+(minified bundle, licensing enforced), Docker image without source, customer install kit. Owner portal: customers,
+installations, issue/renew/email licence keys, renewal dashboard, activity; owner-only sign-in with CSRF and lockout.
+
 ## Still open (from JIRA_REQUIREMENTS.md)
 Configurable permission/notification schemes, workflow post-functions, dev-tool integrations (GitHub/GitLab), Forms,
 AI summaries, Jira-identical REST paths (/rest/api/3), JQL autocomplete, attachment thumbnails/virus scan/S3,

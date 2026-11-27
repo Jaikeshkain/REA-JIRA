@@ -16,6 +16,8 @@ import { cleanFilename } from './attachments.js';
 import { tick } from './scheduler.js';
 import { startMockIdp } from './dev-idp.js';
 import { parseDuration, formatDuration } from './timetracking.js';
+import { signLicense, verifyLicense, evaluate } from './license.js';
+import { generateKeyPairSync } from 'node:crypto';
 import type { OidcConfig } from './oidc.js';
 
 let passed = 0;
@@ -1716,6 +1718,139 @@ try {
     const acts = (await call(admin, 'GET', '/admin/audit?category=admin')).body.values.map((x: any) => x.target);
     assert.ok(acts.some((t: string) => t?.includes('closed sign-up')) && acts.some((t: string) => t?.includes('site admins only')));
     await call(admin, 'PUT', '/admin/settings', { allowSignup: true, spaceCreation: 'everyone' });
+  });
+
+  await test('licensing: signed keys, states, read-only mode, seats, installation binding, clock rollback', async () => {
+    const kp = generateKeyPairSync('ed25519');
+    const priv = kp.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    const pub = kp.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const other = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    const day = 86400_000;
+    const key = (o: Partial<{ seats: number; install: string; from: number; to: number; lid: string }> = {}) => signLicense({
+      v: 1, lid: o.lid ?? 'L-test', customer: 'Acme Ltd', seats: o.seats ?? 50, install: o.install ?? '*',
+      issued: new Date(Date.now() + (o.from ?? 0) * day).toISOString(), expires: new Date(Date.now() + (o.to ?? 30) * day).toISOString(),
+    }, priv);
+
+    // keys: genuine, edited, signed by someone else
+    const k = key();
+    const good = verifyLicense(k, pub);
+    assert.equal(good.ok, true);
+    const [h0, body, sig] = k.split('.');
+    const forged = Buffer.from(body, 'base64url').toString().replace('"seats":50', '"seats":5000');
+    assert.equal(verifyLicense(`${h0}.${Buffer.from(forged).toString('base64url')}.${sig}`, pub).ok, false, 'edited key rejected');
+    assert.equal(verifyLicense(signLicense((good as any).payload, other), pub).ok, false, 'key from another private key rejected');
+    assert.equal(verifyLicense('hello', pub).ok, false);
+
+    // state machine
+    const now = new Date();
+    const at = (d: number) => new Date(now.getTime() + d * day).toISOString();
+    const payload = (exp: number) => ({ v: 1 as const, lid: 'x', customer: 'A', seats: 1, install: '*', issued: at(-30), expires: at(exp) });
+    const ev = (p: any, installedDaysAgo = 1) => evaluate({ enforce: true, payload: p, installationId: 'i', installedAt: new Date(now.getTime() - installedDaysAgo * day), now }).state;
+    assert.equal(evaluate({ enforce: false, payload: null, installationId: 'i', installedAt: now, now }).state, 'development');
+    assert.equal(ev(null, 3), 'trial');
+    assert.equal(ev(null, 20), 'read-only');
+    assert.equal(ev(payload(20)), 'valid');
+    assert.equal(ev(payload(5)), 'expiring');
+    assert.equal(ev(payload(-5)), 'grace');
+    assert.equal(ev(payload(-20)), 'read-only');
+    const evUsed = (p: any, usedDays: number, installedDaysAgo = 1) => evaluate({ enforce: true, payload: p, installationId: 'i', installedAt: new Date(now.getTime() - installedDaysAgo * day), now, usedDays }).state;
+    assert.equal(evUsed(payload(20), 10), 'valid', '50-day key, 10 days used');
+    assert.equal(evUsed(payload(20), 45), 'expiring', '50-day key, 45 days used: 5 days of use left');
+    assert.equal(evUsed(payload(20), 70), 'read-only', 'date says valid, but more running time than the key (50) + grace (14) allow');
+    assert.equal(evUsed(null, 15, 2), 'read-only', 'trial used up even if the calendar says day 2');
+
+    // a release-mode app on the same database
+    const app3 = buildApp(db, { attachmentsDir: attachDir, oidc: null, license: { enforce: true, publicKey: pub } });
+    const srv3 = app3.listen(0);
+    const b3 = `http://127.0.0.1:${(srv3.address() as AddressInfo).port}/api`;
+    const c3 = async (t: string | null, method: string, path: string, payloadBody?: unknown) => {
+      const res = await fetch(b3 + path, { method, headers: { 'content-type': 'application/json', ...(t ? { authorization: `Bearer ${t}` } : {}) }, body: payloadBody === undefined ? undefined : JSON.stringify(payloadBody) });
+      const text = await res.text();
+      return { status: res.status, body: text ? JSON.parse(text) : null };
+    };
+    const lic = app3.locals.licensing as { invalidate(): void };
+    const status = async () => { lic.invalidate(); return (await c3(admin, 'GET', '/license/status')).body; };
+    try {
+      await db.query(`UPDATE installation SET license_key = NULL, max_seen_at = NULL, created_at = now() WHERE id = 1`);
+      const s0 = await status();
+      assert.equal(s0.state, 'trial');
+      assert.ok(s0.installationId);
+      assert.equal((await c3(dev, 'GET', '/license/status')).body.installationId, undefined, 'details for site admins only');
+
+      // trial over: reads, search, sign-in and the licence page work; changes don't
+      await db.query(`UPDATE installation SET created_at = now() - interval '20 days' WHERE id = 1`);
+      assert.equal((await status()).readOnly, true);
+      const blocked = await c3(dev, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'nope' } });
+      assert.equal(blocked.status, 403);
+      assert.match(blocked.body.errorMessages[0], /read-only/);
+      assert.equal((await c3(dev, 'GET', '/issue/DEMO-1')).status, 200);
+      assert.equal((await c3(dev, 'POST', '/search/jql', { jql: 'project = DEMO' })).status, 200);
+      assert.equal((await c3(null, 'POST', '/auth/login', { email: 'dev@tracker.test', password: DEMO_USERS[0].password })).status, 200, 'sign-in still works');
+
+      // installing keys: other installation, long expired, not an admin, valid
+      const inst = s0.installationId;
+      assert.equal((await c3(admin, 'PUT', '/admin/license', { key: key({ install: 'some-other-install' }) })).status, 400);
+      assert.equal((await c3(admin, 'PUT', '/admin/license', { key: key({ from: -60, to: -30 }) })).status, 400, 'expired keys are refused');
+      assert.equal((await c3(dev, 'PUT', '/admin/license', { key: key({ install: inst }) })).status, 403, 'site admins only');
+      const ok = await c3(admin, 'PUT', '/admin/license', { key: key({ install: inst, to: 30 }) });
+      assert.equal(ok.status, 200);
+      assert.equal(ok.body.state, 'valid');
+      assert.equal(ok.body.license.customer, 'Acme Ltd');
+      assert.equal((await c3(dev, 'POST', '/issue', { fields: { project: { key: 'DEMO' }, issuetype: { name: 'Task' }, summary: 'Licensed' } })).status, 201);
+
+      // seats: a licence for exactly the people already active blocks adding more
+      const used = (await status()).usedSeats;
+      await c3(admin, 'PUT', '/admin/license', { key: key({ install: inst, seats: used }) });
+      const full = await c3(admin, 'POST', '/admin/users/invite', { email: 'seat@tracker.test', displayName: 'Seat' });
+      assert.equal(full.status, 403);
+      assert.match(full.body.errorMessages[0], new RegExp(`covers ${used} active user`));
+      await c3(admin, 'PUT', '/admin/license', { key: key({ install: inst, seats: used + 1 }) });
+      assert.equal((await c3(admin, 'POST', '/admin/users/invite', { email: 'seat@tracker.test', displayName: 'Seat' })).status, 201);
+
+      // grace: expired 3 days ago still works; turning the clock back doesn't revive an expired licence
+      await db.query(`UPDATE installation SET license_key = $1 WHERE id = 1`, [key({ install: inst, from: -33, to: -3 })]);
+      const g = await status();
+      assert.equal(g.state, 'grace');
+      assert.equal(g.readOnly, false);
+      await db.query(`UPDATE installation SET license_key = $1, max_seen_at = now() + interval '40 days' WHERE id = 1`, [key({ install: inst, to: 10 })]);
+      assert.equal((await status()).state, 'read-only', 'latest time seen wins over a rolled-back clock');
+      const acts = (await call(admin, 'GET', '/admin/audit?category=admin')).body.values.map((a: any) => a.action);
+      assert.ok(acts.includes('Installed a licence key'));
+
+      // usage counter: a frozen clock still runs out
+      const usage = async () => Number((await db.query(`SELECT usage_seconds FROM installation WHERE id = 1`))[0].usage_seconds);
+      await db.query(`UPDATE installation SET max_seen_at = NULL WHERE id = 1`);
+      const frozen = key({ install: inst, to: 30, lid: 'L-frozen' });
+      assert.equal((await c3(admin, 'PUT', '/admin/license', { key: frozen })).body.state, 'valid');
+      await db.query(`UPDATE installation SET usage_seconds = usage_seconds + $1 WHERE id = 1`, [50 * 86400]);
+      const spent = await status();
+      assert.equal(spent.state, 'read-only', 'the calendar says valid, the running time says used up');
+      assert.match(spent.message, /used up/);
+      assert.ok(spent.usage.usedDays >= 50 && spent.usage.allowedDays === 44);
+      // reinstalling the same key doesn't reset its allowance; a new key starts a new one
+      assert.equal((await c3(admin, 'PUT', '/admin/license', { key: frozen })).body.state, 'read-only');
+      assert.equal((await c3(admin, 'PUT', '/admin/license', { key: key({ install: inst, to: 30, lid: 'L-next' }) })).body.state, 'valid');
+
+      // counting: at most 10 minutes per step (server was off), never backwards (clock moved back)
+      await db.query(`UPDATE installation SET usage_tick_at = now() - interval '5 hours' WHERE id = 1`);
+      const u0 = await usage(); await status(); const u1 = await usage();
+      assert.ok(u1 - u0 <= 600 && u1 - u0 >= 590, `capped step, added ${u1 - u0}s`);
+      await db.query(`UPDATE installation SET usage_tick_at = now() + interval '2 hours' WHERE id = 1`);
+      const u2 = await usage(); await status();
+      assert.equal(await usage(), u2, 'a clock moved backwards adds nothing');
+
+      // newest recorded activity counts as "now": History written by a correct clock outlives a rolled-back app clock
+      await db.query(`UPDATE installation SET max_seen_at = NULL WHERE id = 1`);
+      await c3(admin, 'PUT', '/admin/license', { key: key({ install: inst, to: 10, lid: 'L-act' }) });
+      await db.query(`INSERT INTO audit_log (tenant_id, actor_id, category, action, created_at) VALUES (1, 1, 'admin', 'probe', now() + interval '40 days')`);
+      assert.equal((await status()).state, 'read-only', 'activity dated 40 days ahead means the 10-day key is long gone');
+      await db.query(`DELETE FROM audit_log WHERE action = 'probe'`);
+    } finally {
+      await db.query(`UPDATE installation SET license_key = NULL, max_seen_at = NULL, created_at = now(), usage_seconds = 0, usage_tick_at = NULL WHERE id = 1`);
+      await db.query(`DELETE FROM license_usage`);
+      (app3.locals.hub as { close(): void }).close();
+      srv3.close();
+    }
   });
 
   await test('recently viewed list', async () => {

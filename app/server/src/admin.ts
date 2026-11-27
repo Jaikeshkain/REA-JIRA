@@ -17,6 +17,7 @@ import { projectByKey, roleIn } from './access.js';
 import { can } from './permissions.js';
 import { audit } from './audit.js';
 import { issueToken, sendAccountEmail } from './accounts.js';
+import type { Licensing } from './license.js';
 
 const SYSTEM = `email NOT LIKE '%@tracker.system'`; // the Automation bot isn't a person
 const RANK = `CASE role WHEN 'admin' THEN 4 WHEN 'member' THEN 3 WHEN 'viewer' THEN 2 ELSE 1 END`;
@@ -82,6 +83,7 @@ export function adminRoutes(db: Db, onAccessChanged: () => void) {
     const body = z.object({ email: z.string().email(), displayName: z.string().trim().min(1).max(80), siteAdmin: z.boolean().default(false) }).parse(req.body ?? {});
     const [dup] = await db.query(`SELECT 1 FROM users WHERE tenant_id = $1 AND email = lower($2)`, [actor.tenantId, body.email]);
     if (dup) throw bad('Someone with that email already has an account');
+    await (req.app.locals.licensing as Licensing | undefined)?.assertSeats();
     const colors = ['#0c66e4', '#6e5dc6', '#1f845a', '#c9372c', '#a54800', '#206a83', '#943d73'];
     const [u] = await db.query(
       `INSERT INTO users (tenant_id, email, display_name, password_hash, avatar_color, is_site_admin) VALUES ($1, lower($2), $3, '!invited', $4, $5) RETURNING *`,
@@ -120,6 +122,7 @@ export function adminRoutes(db: Db, onAccessChanged: () => void) {
     const actor = req.user!;
     admin(actor);
     const u = await load(actor, String(req.params.id));
+    if (!u.active) await (req.app.locals.licensing as Licensing | undefined)?.assertSeats();
     await db.tx(async (q) => {
       await q.query(`UPDATE users SET active = true WHERE id = $1`, [u.id]);
       await syncGroupAccess(q, actor.tenantId);

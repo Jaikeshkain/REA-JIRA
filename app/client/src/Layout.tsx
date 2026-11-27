@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import { LicenseBanner } from './pages/License';
 import { VerifyBanner } from './pages/Account';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { api, type ProjectSummary } from './api';
@@ -103,7 +104,7 @@ export function Layout() {
             </Popover>
           </div>
         </header>
-        {user && user.emailVerified === false && <div className="verify-wrap"><VerifyBanner /></div>}
+        <div className="verify-wrap"><LicenseBanner />{user && user.emailVerified === false && <VerifyBanner />}</div>
         <nav className="sidebar" aria-label="Sidebar">
           <NavLink to="/for-you" className="side-link">For you</NavLink>
           <NavLink to="/issues" end className="side-link">Search</NavLink>

@@ -1,6 +1,11 @@
 // Typed client for the Tracker API (shapes follow app/server/src/issues.ts + projects.ts).
 
 export interface User { accountId: string; displayName: string; emailAddress?: string; avatarColor?: string; isSiteAdmin?: boolean; role?: string; emailVerified?: boolean; canCreateSpaces?: boolean }
+export interface LicenseStatus {
+  state: 'development' | 'trial' | 'valid' | 'expiring' | 'grace' | 'read-only'; readOnly: boolean; message: string; daysLeft: number | null;
+  installationId?: string; seats?: number | null; usedSeats?: number; problem?: string | null; usage?: { usedDays: number; allowedDays: number } | null;
+  license?: { id: string; customer: string; seats: number; issued: string; expires: string; install: string } | null;
+}
 export interface SiteSettingsData { allowSignup: boolean; signupDomains: string[]; spaceCreation: 'everyone' | 'admins' }
 export interface AdminUser extends User { active: boolean; isSiteAdmin: boolean; emailVerified: boolean; status: 'active' | 'invited' | 'deactivated'; sso: boolean; lastLogin: string | null; created: string; groups: string[] }
 export interface Group { id: string; name: string; description: string; members: { accountId: string; displayName: string; active: boolean }[]; spaces: { key: string; role: string }[] }
@@ -194,6 +199,8 @@ export const api = {
   register: (email: string, displayName: string, password: string) =>
     call<{ token: string; user: User }>('POST', '/auth/register', { email, displayName, password }),
   logout: () => call('POST', '/auth/logout'),
+  licenseStatus: () => call<LicenseStatus>('GET', '/license/status'),
+  installLicense: (key: string) => call<LicenseStatus>('PUT', '/admin/license', { key }),
   siteInfo: () => call<{ setup: boolean; allowSignup: boolean; signupDomains: string[] }>('GET', '/auth/site'),
   siteSettings: () => call<SiteSettingsData>('GET', '/admin/settings'),
   updateSiteSettings: (body: Partial<SiteSettingsData>) => call<SiteSettingsData>('PUT', '/admin/settings', body),

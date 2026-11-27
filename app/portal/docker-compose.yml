@@ -1,0 +1,21 @@
+# Owner portal on your VPS. See app/portal/DEPLOY.md.
+#   1. put your private key at app/portal/secrets/vendor-private.pem (chown 1000:1000, chmod 400)
+#   2. optional: app/portal/.env with PORTAL_SMTP_URL and PORTAL_MAIL_FROM
+#   3. docker compose -f app/portal/docker-compose.yml up -d --build
+services:
+  portal:
+    build:
+      context: ..
+      dockerfile: portal/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "127.0.0.1:4600:4600"   # only Caddy on this machine reaches it
+    volumes:
+      - portal-data:/data
+      - ${VENDOR_KEY_FILE:-./secrets/vendor-private.pem}:/run/secrets/vendor_key:ro
+
+volumes:
+  portal-data:

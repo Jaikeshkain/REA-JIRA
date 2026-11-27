@@ -139,9 +139,59 @@ npm run build      # type-check server + client, production-build client
   members get that access; people added later get it too, removed people lose it. Personal access is never
   overridden, and the highest role wins when several groups apply. All of this is in the audit log.
 
+## Selling self-hosted licences (owner guide)
+
+Customers run Tracker on their own servers with their own database. They get a **protected image** (one minified
+server file plus the built web app: no source code) and a **monthly licence key** that only you can make.
+
+**Your signing key** lives outside this repository at `~/.tracker-licensing/vendor-private.pem`. Back it up somewhere
+safe and offline. Anyone holding it can make licence keys, and without it you can't renew customers. The app contains
+only the matching public key (`server/src/license-key.ts`).
+
+**Owner portal** (recommended): a private web app, only for you, to manage customers, their installations and licences,
+issue and renew keys from a form, email them to the customer, and see what's due for renewal.
+
+```powershell
+npm --prefix app run portal          # then open http://127.0.0.1:4600 (first visit: create your owner account)
+```
+
+It keeps its data in `~/.tracker-licensing/portal-data`, next to your private key; back up the whole folder. It listens
+on 127.0.0.1 only. To use it from elsewhere, put it behind a VPN, or behind HTTPS with `PORTAL_HOST=0.0.0.0` and
+`PORTAL_SECURE_COOKIES=1`, never openly on the internet. To email keys, set `PORTAL_SMTP_URL` and `PORTAL_MAIL_FROM`.
+It is never part of the customer image. **On your VPS:** follow `app/portal/DEPLOY.md` (Docker, HTTPS, access only from
+your IP or VPN, key mounted read-only, backups).
+
+**Or issue a key from the command line** (customer sends you their Installation ID from Administration → Licence):
+
+```powershell
+npm --prefix app run license -- issue --customer "Acme Ltd" --seats 25 --install <installation-id> --months 1
+npm --prefix app run license -- inspect <key>     # check any key
+```
+
+`--install '*'` makes a key that works on any installation (use it for your own servers only).
+
+**How a key is checked (offline, on their server):** the signature proves you made it and nothing was changed; the
+installation ID must match; the expiry date must not have passed. "Now" is the latest of the app clock, the database
+clock, the newest recorded activity and the latest time ever seen, so winding clocks back doesn't help. A usage
+counter adds up running time and allows the days the key covers plus 14 days of grace, so a frozen clock still runs out.
+After expiry: 14 days of grace, then read-only (no data is ever deleted). Wiping the licensing data creates a new
+Installation ID that no key matches. Offline licensing deters copying; your licence agreement is the legal protection.
+
+**Build and deliver the image.** Simplest: a versioned image file you share by private download link; the customer runs
+`docker load`. Later, a private registry with per-customer read-only access (e.g. Harbor, AWS ECR, Cloudsmith).
+
+```powershell
+docker build -t tracker:1.0.0 ./app
+docker save tracker:1.0.0 -o tracker-1.0.0.tar      # customer: docker load -i tracker-1.0.0.tar, TRACKER_IMAGE=tracker:1.0.0
+```
+
+**Give each customer:** the `app/customer-kit/` folder (`docker-compose.yml`, `.env.example`, `INSTALL.md`), the image
+(file or registry access), and then a key each month. `npm run release` builds the protected bundle locally too.
+
 ## Deploying
 
-One container serves the API and the web app on port 4000; PostgreSQL holds the data.
+One container serves the API and the web app on port 4000; PostgreSQL holds the data. The image is the protected
+release build, so it needs a licence key: issue yourself one with `--install '*'` and install it in Administration → Licence.
 
 ```powershell
 # app/.env (git-ignored): POSTGRES_PASSWORD=…, APP_URL=https://tracker.example.com, SMTP_URL=…, OIDC_* …

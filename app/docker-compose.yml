@@ -29,13 +29,13 @@ services:
     environment:
       DATABASE_URL: postgres://tracker:${POSTGRES_PASSWORD}@db:5432/tracker
       APP_URL: ${APP_URL:-http://localhost:4000}
-      ATTACHMENTS_DIR: /app/server/data/attachments
       SKIP_SEED: ${SKIP_SEED:-1}
+      # the image enforces licensing: install a key in Administration → Licence or set LICENSE_KEY in app/.env
     ports:
       - "${TRACKER_PORT:-4000}:4000"
     volumes:
-      - attachments:/app/server/data/attachments
+      - tracker-data:/app/data
 
 volumes:
   pgdata:
-  attachments:
+  tracker-data:

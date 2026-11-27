@@ -22,6 +22,7 @@ import { createSession, userJson } from './auth.js';
 import { HttpError, h } from './http.js';
 import { APP_URL } from './mail.js';
 import { audit } from './audit.js';
+import type { Licensing } from './license.js';
 
 export interface OidcConfig {
   issuer: string;
@@ -212,6 +213,7 @@ export function oidcRoutes(db: Db, cfg: OidcConfig | null) {
       } else {
         if (!cfg!.autoCreate) return fail('There’s no account for you on this site yet. Ask a site admin to add you.');
         if (!verified(claims.email_verified)) return fail('Your email isn’t verified with your identity provider.');
+        try { await (req.app.locals.licensing as Licensing | undefined)?.assertSeats(); } catch { return fail('There are no free user seats on this site’s licence. Ask a site admin.'); }
         const [tenant] = await db.query(`SELECT id FROM tenants ORDER BY id LIMIT 1`);
         if (!tenant) return fail('This site isn’t set up yet.');
         const name = (claims.name || [claims.given_name, claims.family_name].filter(Boolean).join(' ') || email.split('@')[0]).slice(0, 80);

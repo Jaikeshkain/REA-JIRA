@@ -583,8 +583,20 @@ code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
 
 /* ---------- accounts (must-haves) ---------- */
 .verify-wrap { grid-column: 1 / -1; }
-.shell:has(> .verify-wrap) { grid-template: var(--top-h) auto 1fr / var(--side-w) 1fr; }
+.verify-wrap:empty { display: none; }
+.shell:has(> .verify-wrap:not(:empty)) { grid-template: var(--top-h) auto 1fr / var(--side-w) 1fr; }
 .verify-banner { background: #fff7d6; color: #533f04; border-bottom: 1px solid #f5cd47; padding: 8px 16px; font-size: 13px; }
 .verify-banner .link-btn { color: inherit; text-decoration: underline; }
 @media (prefers-color-scheme: dark) { .verify-banner { background: #3d2e00; color: #f8e6a0; border-color: #7f5f01; } }
 tr.muted td { color: var(--text-muted); }
+
+/* ---------- licensing ---------- */
+.license-banner { padding: 8px 16px; font-size: 13px; border-bottom: 1px solid; }
+.license-banner.warn { background: #fff7d6; color: #533f04; border-color: #f5cd47; }
+.license-banner.bad { background: #ffeceb; color: #5d1f1a; border-color: #f87168; }
+.license-banner a { color: inherit; text-decoration: underline; font-weight: 600; }
+@media (prefers-color-scheme: dark) { .license-banner.warn { background: #3d2e00; color: #f8e6a0; } .license-banner.bad { background: #3a1a17; color: #fdd0cc; } }
+.facts-list { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 14px; }
+.facts-list dt { color: var(--text-subtle); font-weight: 600; }
+.facts-list dd { margin: 0; }
+textarea.mono { font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; }

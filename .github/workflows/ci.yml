@@ -22,10 +22,14 @@ jobs:
         run: npm run typecheck
       - name: Build the web app
         run: npm run build -w client
+      - name: Build the protected server bundle
+        run: node scripts/build-release.mjs
       - name: Smoke tests (embedded database)
         run: npm test
         env:
           DISABLE_SCHEDULER: "1"
+      - name: Owner portal tests
+        run: npx tsc --noEmit -p portal && npm run test:portal
 
   multi-instance:
     runs-on: ubuntu-latest

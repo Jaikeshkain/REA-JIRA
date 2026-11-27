@@ -20,6 +20,7 @@ import { Releases, VersionDetail } from './pages/Releases';
 import { AcceptInvite, AccountSettings, ResetPassword, VerifyEmail } from './pages/Account';
 import { Groups, Users } from './pages/People';
 import { SiteSettings } from './pages/SiteSettings';
+import { LicensePage } from './pages/License';
 
 function App() {
   const { user, ready } = useAuth();
@@ -64,6 +65,7 @@ function App() {
         <Route path="/admin/users" element={<Users />} />
         <Route path="/admin/groups" element={<Groups />} />
         <Route path="/admin/settings" element={<SiteSettings />} />
+        <Route path="/admin/license" element={<LicensePage />} />
         <Route path="*" element={<div className="page"><h1>Page not found</h1></div>} />
       </Route>
     </Routes>

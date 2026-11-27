@@ -30,14 +30,19 @@ import { voteRoutes } from './votes.js';
 import { accountRoutes, myAccountRoutes } from './accounts.js';
 import { adminRoutes } from './admin.js';
 import { publicSiteRoutes, siteSettingsRoutes } from './sitesettings.js';
+import { Licensing, RELEASE_BUILD, defaultPublicKey, licenseRoutes, readOnlyGuard } from './license.js';
 import { createSession, userJsonFromRow } from './auth.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-export function buildApp(db: Db, opts: { attachmentsDir?: string; oidc?: OidcConfig | null } = {}) {
+export function buildApp(db: Db, opts: { attachmentsDir?: string; oidc?: OidcConfig | null; license?: { enforce?: boolean; publicKey?: string } } = {}) {
   const store = new FileStore(opts.attachmentsDir || process.env.ATTACHMENTS_DIR || join(here, '..', 'data', 'attachments'));
   const app = express();
   app.disable('x-powered-by');
+  // licensing: enforced in the release build (or when a test asks); running from source is never locked
+  const licensing = new Licensing(db, opts.license?.enforce ?? RELEASE_BUILD, opts.license?.publicKey ?? defaultPublicKey());
+  app.locals.licensing = licensing;
+  licensing.start(); // counts running time (enforced builds only)
   // behind a load balancer / reverse proxy: TRUST_PROXY=1 (or a hop count / subnet) so req.ip is the real client
   if (process.env.TRUST_PROXY) app.set('trust proxy', /^\d+$/.test(process.env.TRUST_PROXY) ? Number(process.env.TRUST_PROXY) : process.env.TRUST_PROXY);
   app.use((_req, res, next) => {
@@ -63,6 +68,7 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string; oidc?: OidcCon
   app.use(
     '/api',
     authMiddleware(db),
+    readOnlyGuard(licensing),
     changeTracker(db, hub),
     auditTrail(db),
     projectRoutes(db),
@@ -87,6 +93,7 @@ export function buildApp(db: Db, opts: { attachmentsDir?: string; oidc?: OidcCon
     myAccountRoutes(db),
     adminRoutes(db, () => hub.invalidate()),
     siteSettingsRoutes(db),
+    licenseRoutes(db, licensing),
   );
   app.use('/api', (_req, res) => {
     res.status(404).json({ errorMessages: ['Not found'] });

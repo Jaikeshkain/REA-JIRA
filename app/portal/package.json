@@ -1,0 +1,6 @@
+{
+  "name": "@tracker/owner-portal",
+  "private": true,
+  "type": "module",
+  "description": "Owner-only licence portal. Never shipped to customers."
+}

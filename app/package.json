@@ -12,7 +12,12 @@
     "test": "npm run test -w server",
     "dev:sso": "concurrently -n idp,server,client -c magenta,blue,green \"npm run dev:idp -w server\" \"npm run dev:sso -w server\" \"npm run dev -w client\"",
     "start": "npm run start -w server",
-    "typecheck": "npm run build -w server && tsc --noEmit -p client"
+    "typecheck": "npm run build -w server && tsc --noEmit -p client",
+    "license": "tsx licensing/license-tool.ts",
+    "release": "npm run build -w client && node scripts/build-release.mjs",
+    "release:server": "node scripts/build-release.mjs",
+    "portal": "tsx portal/src/index.ts",
+    "test:portal": "tsx portal/src/portal.test.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

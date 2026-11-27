@@ -599,3 +599,21 @@ CREATE TABLE IF NOT EXISTS site_settings (
   space_creation  TEXT NOT NULL DEFAULT 'everyone' CHECK (space_creation IN ('everyone','admins')),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ---------------------------------------------------------------- licensing (self-hosted)
+CREATE TABLE IF NOT EXISTS installation (
+  id                    INT PRIMARY KEY CHECK (id = 1),
+  install_id            TEXT NOT NULL,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  max_seen_at           TIMESTAMPTZ,
+  license_key           TEXT,
+  license_installed_at  TIMESTAMPTZ
+);
+ALTER TABLE installation ADD COLUMN IF NOT EXISTS usage_seconds BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE installation ADD COLUMN IF NOT EXISTS usage_tick_at TIMESTAMPTZ;
+-- usage counter value when each licence key was first installed (reinstalling a key doesn't reset it)
+CREATE TABLE IF NOT EXISTS license_usage (
+  lid          TEXT PRIMARY KEY,
+  usage_start  BIGINT NOT NULL,
+  first_seen   TIMESTAMPTZ NOT NULL DEFAULT now()
+);

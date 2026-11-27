@@ -2,7 +2,12 @@ node_modules
 **/node_modules
 server/data
 client/dist
+release
+licensing
+customer-kit
+**/*.test.ts
 **/.env
 **/.env.*
 !**/.env.example
 *.log
+portal

@@ -8,6 +8,7 @@ import { ssoOnly } from './oidc.js';
 import { audit, userForToken, TOKEN_PREFIX } from './audit.js';
 import { checkRate, recordFailure, IDLE_HOURS, issueToken, sendAccountEmail } from './accounts.js';
 import { assertSignupAllowed } from './sitesettings.js';
+import type { Licensing } from './license.js';
 
 export interface AuthUser {
   id: number;
@@ -143,6 +144,7 @@ export function authRoutes(db: Db) {
         throw new HttpError(403, 'This site uses single sign-on. Sign in with SSO instead.');
       } else {
         await assertSignupAllowed(db, tenant.id, body.email);
+        await (req.app.locals.licensing as Licensing | undefined)?.assertSeats();
       }
       const exists = await db.query(`SELECT 1 FROM users WHERE tenant_id=$1 AND email=lower($2)`, [tenant.id, body.email]);
       if (exists.length) throw bad('An account with this email already exists');

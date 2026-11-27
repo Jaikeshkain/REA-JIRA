@@ -13,3 +13,10 @@ evidence/
 .env
 .env.*
 !.env.example
+
+# protected release build output (npm run release)
+app/release/
+
+# owner portal secrets on servers (never commit your private key)
+app/portal/secrets/
+*.pem
